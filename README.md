@@ -1,27 +1,22 @@
 # Piggy
 
-Kotlin Android 客户端通过本机端口连接 Node.js 后端，由 pi-agent-core 调用 OpenAI。支持流式文本、多轮上下文和新建对话。每个会话独立保存在后端内存中，空闲一小时过期，服务重启后清空。
+Piggy 是自用的 Android 聊天应用。APK 随附官方 `@earendil-works/pi-agent-core` 1.5.2。APK 内置 Node.js/V8（Javet Android），在应用进程内执行本地 JavaScript，Kotlin 通过 HTTPS 直连 OpenAI，按流显示回复。安装后可在能访问 OpenAI 的网络上直接对话。支持 Android 7.0 及以上的 ARM64 和 x86_64 设备。
 
-## 启动后端
+## 构建个人 APK
 
-在 server 目录使用 Node.js 24.5 或更高版本，执行以下命令。启动进程从环境变量 PI_API_KEY 读取 OpenAI 密钥，默认模型为 gpt-4.1-mini，可通过 PI_MODEL 指定支持 Chat Completions 的 OpenAI 模型。
-
-```sh
-npm ci
-npm start
-```
-
-服务监听 127.0.0.1:8787，用于本机开发和 adb 联调。执行 `node --test chat.test.ts` 可在本机用模拟模型验证流式回复，以及生成失败后的多轮上下文。
-
-## 在 Android 上运行
-
-在 android 目录使用 JDK 21、Android SDK 36 和已连接的模拟器或 USB 调试设备执行以下命令。adb 和后端需要在同一台开发机运行。
+使用 Node.js 24、JDK 21、Android SDK 36 和 Gradle Wrapper。在项目根目录执行：
 
 ```sh
-./gradlew :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb reverse tcp:8787 tcp:8787
-adb shell am start -n dev.pichat/.ChatActivity
+(cd mobile-agent && npm ci)
+cd android
+PI_API_KEY_FILE=/path/to/private-key.txt ./gradlew :app:assembleDebug
 ```
 
-设备通过 adb 转发访问后端。断开调试连接后，需要重新建立端口转发。手机端仅在当前界面保留聊天记录。
+文件应仅包含个人 OpenAI API Key，也可由构建进程的 `PI_API_KEY` 环境变量提供。调试包位于 `android/app/build/outputs/apk/debug/app-debug.apk`。APK 和 Android 构建目录中都包含可提取的 Key，请仅自己保管。轮换 Key 后重新构建并安装。发布构建可使用 `:app:assembleRelease` 并以自己的 Android 签名密钥签名。
+
+## 运行结构
+
+- `mobile-agent/runtime.js` 使用 Pi 的 Agent、OpenAI Chat Completions 适配器和流式事件。默认模型是 `gpt-4.1-mini`。所有官方 Core 运行时导出均作为 `globalThis.PiAgentCore` 提供给本地扩展；构建脚本从锁定的 npm 包生成导出清单，应用启动时核对。
+- `MobileAgent.kt` 只向固定的 OpenAI HTTPS 地址附加凭证，保留系统证书和主机名验证。Pi 在专用线程运行。模型请求由 Kotlin 执行，Key 不会作为 JavaScript 的参数传递。
+- 一个聊天界面对应一个内存会话。点“新对话”重置上下文；关闭界面后清空。普通失败可重新发送。
+- `server/` 保留早期 Node.js 后端实现和测试，当前 APK 独立运行。

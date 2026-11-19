@@ -5,3 +5,7 @@ local.properties
 .env
 .env.*
 .kotlin/
+*.apk
+*.aab
+personal.key
+*.hprof

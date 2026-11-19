@@ -10,9 +10,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 class ChatActivity : Activity() {
     private lateinit var transcript: LinearLayout
@@ -20,8 +17,9 @@ class ChatActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var send: Button
     private lateinit var reset: Button
-    private var session: String? = null
-    @Volatile private var connection: HttpURLConnection? = null
+    private lateinit var agent: MobileAgent
+    private var pendingResponse: TextView? = null
+    private var pendingDraft = ""
     private val ink = Color.rgb(26, 45, 40)
     private val paper = Color.rgb(249, 249, 245)
     private val green = Color.rgb(31, 91, 74)
@@ -60,7 +58,7 @@ class ChatActivity : Activity() {
             background = shape(Color.rgb(227, 237, 229), 16)
             setTextColor(green)
             setOnClickListener {
-                session = null
+                agent.reset()
                 transcript.removeAllViews()
                 input.setText("")
                 input.requestFocus()
@@ -95,6 +93,24 @@ class ChatActivity : Activity() {
             fitsSystemWindows = true
             addView(root)
         })
+        controls(false)
+        agent = MobileAgent(this, onReady = { controls(true) }, onDelta = { delta ->
+            pendingResponse?.append(delta)
+            toBottom()
+        }, onFinished = { error ->
+            if (error.isNotEmpty()) {
+                pendingResponse?.text = error
+                input.setText(pendingDraft)
+                input.setSelection(input.length())
+            }
+            pendingResponse = null
+            pendingDraft = ""
+            controls(true)
+        }, onInitFailure = {
+            controls(false)
+            bubble("无法启动内置 Pi 运行时，请重新打开应用。", false)
+        })
+
     }
 
     private fun bubble(text: String, user: Boolean): TextView {
@@ -117,65 +133,23 @@ class ChatActivity : Activity() {
     private fun submit() {
         val message = input.text.toString().trim()
         if (message.isEmpty() || !send.isEnabled) return
-        val current = session
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
-        send.isEnabled = false
-        reset.isEnabled = false
-        input.isEnabled = false
+        controls(false)
+        pendingDraft = message
         input.setText("")
         bubble(message, true)
-        val response = bubble("正在回复…", false)
-        Thread {
-            val http = URL("http://127.0.0.1:8787/chat").openConnection() as HttpURLConnection
-            connection = http
-            try {
-                http.requestMethod = "POST"
-                http.connectTimeout = 5000
-                http.readTimeout = 120000
-                http.doOutput = true
-                http.setRequestProperty("Content-Type", "application/json")
-                val payload = JSONObject().put("text", message).put("session", current)
-                http.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
-                if (http.responseCode != 200) {
-                    val detail = http.errorStream?.bufferedReader()?.use { JSONObject(it.readText()).optString("error") }
-                    throw ChatFailure(detail ?: "后端暂不可用")
-                }
-                var nextSession: String? = null
-                val reply = StringBuilder()
-                http.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                    for (line in lines) {
-                        val event = JSONObject(line)
-                        if (event.has("error")) throw ChatFailure(event.getString("error"))
-                        if (event.has("delta")) {
-                            reply.append(event.getString("delta"))
-                            val snapshot = reply.toString()
-                            runOnUiThread { response.text = snapshot; toBottom() }
-                        }
-                        if (event.optBoolean("done")) nextSession = event.getString("session")
-                    }
-                }
-                if (nextSession == null || reply.isEmpty()) throw ChatFailure("回复未完成，可重新发送")
-                runOnUiThread { session = nextSession }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    response.text = (e as? ChatFailure)?.message ?: "无法连接，请检查服务和设备连接后重试"
-                    input.setText(message)
-                    input.setSelection(input.length())
-                }
-            } finally {
-                http.disconnect()
-                connection = null
-                runOnUiThread {
-                    send.isEnabled = true
-                    reset.isEnabled = true
-                    input.isEnabled = true
-                }
-            }
-        }.start()
+        pendingResponse = bubble("", false).apply { hint = "正在回复…" }
+        agent.prompt(message)
     }
+
+    private fun controls(enabled: Boolean) {
+        send.isEnabled = enabled
+        reset.isEnabled = enabled
+        input.isEnabled = enabled
+    }
+
     override fun onDestroy() {
-        connection?.disconnect()
+        agent.close()
         super.onDestroy()
     }
-    private class ChatFailure(message: String) : Exception(message)
 }

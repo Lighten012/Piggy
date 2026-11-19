@@ -8,12 +8,46 @@ android {
     compileSdk 36
     defaultConfig {
         applicationId 'dev.pichat'
-        minSdk 23
+        minSdk 24
         targetSdk 36
     }
+    packaging.jniLibs.useLegacyPackaging = true
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
 }
 kotlin { jvmToolchain(21); compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+
+// Bundle the complete public Pi runtime and a build-specific credential as app assets.
+def mobileAgent = rootProject.file('../mobile-agent')
+def assetsDir = layout.buildDirectory.dir('generated/piggy/assets')
+def compileAgent = tasks.register('compileMobileAgent', Exec) {
+    workingDir mobileAgent
+    inputs.files(new File(mobileAgent, 'runtime.js'), new File(mobileAgent, 'build.mjs'),
+                 new File(mobileAgent, 'package-lock.json'), new File(mobileAgent, 'package.json'))
+    outputs.file(assetsDir.map { it.file('piggy.js') })
+    commandLine 'node', 'build.mjs', assetsDir.get().asFile.absolutePath
+}
+def writeCredential = tasks.register('writePersonalCredential') {
+    outputs.file(assetsDir.map { it.file('personal.key') })
+    outputs.upToDateWhen { false }
+    outputs.doNotCacheIf('Contains a personal API key') { true }
+    doLast {
+        def key = System.getenv('PI_API_KEY')?.trim()
+        def path = System.getenv('PI_API_KEY_FILE')
+        if (!key && path) key = new File(path).getText('UTF-8').trim()
+        if (!key || !key.startsWith('sk-') || key.find(/\s/)) {
+            throw new GradleException('Set PI_API_KEY or PI_API_KEY_FILE to build the personal APK.')
+        }
+        def out = assetsDir.get().file('personal.key').asFile
+        out.parentFile.mkdirs()
+        out.text = key
+    }
+}
+android.sourceSets.main.assets.srcDir(assetsDir)
+tasks.named('preBuild') { dependsOn compileAgent, writeCredential }
+
+dependencies {
+    implementation "com.caoccao.javet:javet-node-android-i18n:6.0.3"
+}
