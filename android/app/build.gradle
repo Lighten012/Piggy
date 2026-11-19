@@ -1,0 +1,19 @@
+plugins {
+    id 'com.android.application' version '8.13.2'
+    id 'org.jetbrains.kotlin.android' version '2.2.21'
+}
+
+android {
+    namespace 'dev.pichat'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'dev.pichat'
+        minSdk 23
+        targetSdk 36
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+kotlin { jvmToolchain(21); compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
