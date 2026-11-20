@@ -37,8 +37,13 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
     private fun version(info: PackageInfo) = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
     private val cache = File(activity.cacheDir, "updates")
 
+    fun checkOnLaunch() {
+        if (confirmedInProcess) changed(UpdateState.Current) else check()
+    }
+
     fun check() {
         if (checking || closed) return
+        confirmedInProcess = false
         checking = true
         verified = null
         changed(UpdateState.Checking)
@@ -48,6 +53,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
                 if (closed) return@runOnUiThread
                 checking = false
                 result.onSuccess { update ->
+                    confirmedInProcess = update == null
                     verified = update?.second
                     changed(if (update == null) UpdateState.Current else UpdateState.Ready(update.first))
                 }.onFailure {
@@ -161,5 +167,9 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
     }
 
     fun close() { closed = true; worker.shutdownNow() }
-    companion object { const val PERMISSION_REQUEST = 301 }
+    companion object {
+        const val PERMISSION_REQUEST = 301
+        // Main thread only. A new process or a server-mandated check must verify again.
+        private var confirmedInProcess = false
+    }
 }

@@ -1,6 +1,12 @@
 package dev.pichat
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.net.Uri
+import android.webkit.MimeTypeMap
+import org.json.JSONObject
 import android.content.Intent
 import android.text.TextUtils
 import android.content.res.ColorStateList
@@ -27,6 +33,7 @@ class ChatActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var attach: TextView
     private lateinit var fileRow: LinearLayout
+    private lateinit var draftImage: ImageView
     private lateinit var fileName: TextView
     private lateinit var remove: TextView
     private lateinit var send: ImageButton
@@ -113,6 +120,10 @@ class ChatActivity : Activity() {
             background = shape(Color.WHITE, 20, true)
             setPadding(dp(14), 0, dp(4), 0)
         }
+        draftImage = previewView()
+        fileRow.addView(draftImage, LinearLayout.LayoutParams(dp(56), dp(56)).apply {
+            setMargins(0, dp(4), dp(10), dp(4))
+        })
         fileName = text("", 14f, plum).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
         fileRow.addView(fileName, LinearLayout.LayoutParams(0, wrap, 1f))
         remove = text("×", 24f, muted).apply {
@@ -190,17 +201,60 @@ class ChatActivity : Activity() {
         val recent = client.recent
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
-            bubble(turn.getString("text"), true, turn.optString("filename"))
+            bubble(turn.getString("text"), true, turn.optJSONObject("file"), turn.optString("filename"))
             bubble(turn.getString("answer"), false)
         }
         input.setText(client.draft)
         showFile()
+        updater.checkOnLaunch()
     }
 
     private fun showFile() {
         val file = client.attachment
         fileRow.visibility = if (file == null) View.GONE else View.VISIBLE
         fileName.text = file?.let { client.fileLabel(it) } ?: ""
+        ImagePreviews.display(draftImage, file?.let { ImagePreviews.source(it) }, file?.optString("name").orEmpty())
+        fileRow.setOnClickListener { if (file != null) openFile(file) }
+        fileRow.contentDescription = file?.let { "打开附件，" + it.getString("name") }
+        fileRow.isFocusable = file != null
+    }
+
+    private fun openFile(file: JSONObject) {
+        val name = file.getString("name")
+        val uri = Uri.parse(file.getString("uri"))
+        val image = ImagePreviews.source(file)
+        if (image != null) {
+            val preview = previewView()
+            val dialog = AlertDialog.Builder(this).setTitle(name).setView(preview)
+                .setPositiveButton("关闭", null).show()
+            ImagePreviews.enlarge(preview, image, ImagePreviews.saved(this, file.optString("id")), name)
+            dialog.setOnDismissListener { ImagePreviews.display(preview, null, "") }
+            return
+        }
+        var mime = file.optString("mime")
+        if (mime.isBlank() || mime == "application/octet-stream") {
+            mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+                ?: "application/octet-stream"
+        }
+        try {
+            // Detect removed documents here so the user gets a useful message in Piggy.
+            contentResolver.openFileDescriptor(uri, "r")?.close()
+            startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).apply {
+                clipData = ClipData.newRawUri(name, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "手机上没有可打开此类文件的应用", Toast.LENGTH_LONG).show()
+        } catch (_: Exception) {
+            Toast.makeText(this, "无法打开本地文件，请重新选择", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun previewView() = ImageView(this).apply {
+        adjustViewBounds = true
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        background = shape(paper, 12)
+        clipToOutline = true
     }
 
     private fun showVersion(state: UpdateState) {
@@ -246,11 +300,6 @@ class ChatActivity : Activity() {
         gateAction.setOnClickListener { click() }
     }
 
-    override fun onStart() {
-        super.onStart()
-        updater.check()
-    }
-
     @Deprecated("Activity result callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -265,14 +314,35 @@ class ChatActivity : Activity() {
             packageManager.canRequestPackageInstalls()) updater.install()
     }
 
-    private fun bubble(value: String, user: Boolean, fileLabel: String = ""): TextView {
+    private fun bubble(value: String, user: Boolean, file: JSONObject? = null, legacyLabel: String = ""): TextView {
         empty.visibility = View.GONE
         val row = column().apply { gravity = if (user) Gravity.END else Gravity.START }
         val role = text(if (user) "你" else "Piggy", 13f, muted)
         role.setPadding(dp(9), 0, dp(9), dp(5))
         row.addView(role, wrap, wrap)
+        val fileLabel = file?.let { client.fileLabel(it) } ?: legacyLabel
         if (fileLabel.isNotEmpty()) {
-            row.addView(text(fileLabel, 14f, muted).apply { setPadding(dp(9), 0, dp(9), dp(4)) }, wrap, wrap)
+            row.addView(text(fileLabel, 14f, muted).apply {
+                setPadding(dp(9), 0, dp(9), dp(4))
+                if (file != null) {
+                    minHeight = dp(48)
+                    gravity = Gravity.CENTER_VERTICAL
+                    paint.isUnderlineText = true
+                    isFocusable = true
+                    contentDescription = "打开附件，" + file.getString("name")
+                    setOnClickListener { openFile(file) }
+                }
+            }, wrap, wrap)
+        }
+        val image = file?.let { ImagePreviews.saved(this, it.optString("id")) ?: ImagePreviews.source(it) }
+        if (file != null && image != null) {
+            val preview = previewView().apply {
+                maxHeight = dp(190)
+                isFocusable = true
+                setOnClickListener { openFile(file) }
+            }
+            row.addView(preview, LinearLayout.LayoutParams(dp(200), wrap).apply { bottomMargin = dp(4) })
+            ImagePreviews.display(preview, image, fileLabel)
         }
         val view = text("", 17f, if (user) Color.WHITE else ink).apply {
             setTextIsSelectable(true)
@@ -306,7 +376,7 @@ class ChatActivity : Activity() {
         generating = true
         controls()
         input.setText("")
-        bubble(message, true, file?.let { client.fileLabel(it) }.orEmpty())
+        bubble(message, true, file)
         val reply = bubble("", false).apply { hint = if (file == null) "正在回复…" else "正在发送附件…" }
         toBottom()
         val source = StringBuilder()

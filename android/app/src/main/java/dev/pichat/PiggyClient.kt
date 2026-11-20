@@ -54,8 +54,12 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
     }
 
     private fun releaseFile(file: JSONObject?) {
-        if (file != null) runCatching { activity.contentResolver.releasePersistableUriPermission(
-            Uri.parse(file.getString("uri")), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        val uri = file?.optString("uri") ?: return
+        if (attachment?.optString("uri") == uri) return
+        val history = recent
+        if ((0 until history.length()).any { history.getJSONObject(it).optJSONObject("file")?.optString("uri") == uri }) return
+        runCatching { activity.contentResolver.releasePersistableUriPermission(
+            Uri.parse(uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 
     fun removeFile() {
@@ -150,12 +154,18 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                 if (!done) throw IOException("回复中断，请重试")
                 val saved = recent
                 val turn = JSONObject().put("text", text).put("answer", answer.toString())
-                if (file != null) turn.put("filename",fileLabel(file))
+                if (file != null) {
+                    turn.put("filename",fileLabel(file))
+                    ImagePreviews.save(activity, file)
+                    turn.put("file", file)
+                }
                 saved.put(turn)
-                while (saved.length() > 40) saved.remove(0)
+                val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
                 check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
                     .remove("pendingId").remove("file").commit()) { "无法保存回复，请重试" }
-                releaseFile(file)
+                val oldFile = evicted?.optJSONObject("file")
+                ImagePreviews.discard(activity, oldFile?.optString("id"))
+                releaseFile(oldFile)
             }
         }.exceptionOrNull()
         ui { finished(failure?.localizedMessage) }
