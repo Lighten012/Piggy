@@ -19,9 +19,25 @@ PI_API_KEY_FILE=/path/to/private-key.txt ./gradlew :app:assembleDebug
 - `mobile-agent/runtime.js` 使用 Pi 的 Agent、OpenAI Chat Completions 适配器和流式事件。默认模型是 `gpt-4.1-mini`。所有官方 Core 运行时导出均作为 `globalThis.PiAgentCore` 提供给本地扩展；构建脚本从锁定的 npm 包生成导出清单，应用启动时核对。
 - `MobileAgent.kt` 只向固定的 OpenAI HTTPS 地址附加凭证，保留系统证书和主机名验证。Pi 在专用线程运行。模型请求由 Kotlin 执行，Key 不会作为 JavaScript 的参数传递。
 - 一个聊天界面对应一个内存会话。点“新对话”重置上下文；关闭界面后清空。普通失败可重新发送。
-- `server/` 提供独立的网页版聊天管理端，复用官方 Pi Agent 和 OpenAI 适配器。手机端和管理端各自维护对话。
+- `server/admin/` 是 Go + Vue 3 网页聊天管理端，Go 直接调用 OpenAI 流式接口。Android 继续在设备内运行 Pi。两端各自维护对话。
+- `server/server.ts` 保留使用官方 Pi Agent 的 Node.js 版管理端。
 
-## 网页管理端
+## Go + Vue 网页管理端
+
+在仓库根目录构建 Linux x86-64 部署包，使用 Go 1.22+ 和 Node.js 22.12+。
+
+```sh
+(cd server/admin/web && npm ci && npm run build)
+(cd server/admin && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../../piggy-admin .)
+```
+
+将可执行文件 `piggy-admin` 与前端产物 `web/dist/` 放在同一个发布目录，让 `/lighten012/projects/Piggy/current` 指向它。在仅 root 可读的 `/lighten012/projects/Piggy/server.env` 里设置独立管理密码 `PIGGY_ADMIN_PASSWORD` 与 OpenAI 密钥 `PI_API_KEY`。默认模型为 `gpt-4.1-mini`，可用 `PI_MODEL` 指定兼容 OpenAI Chat Completions 的模型。
+
+安装 `server/admin/piggy-admin.service` 并通过 systemd 启动。Go 监听回环地址 18888。按 `server/admin/nginx.conf.example` 配置现有 Nginx，替换为本站证书路径，通过 HTTPS 8888 对外服务。运行 `nginx -t` 验证后重载，浏览器用用户名 `piggy` 登录。
+
+最多同时生成 2 条回复，最多保留 8 个会话，每个会话保留最近 12 轮。空闲会话一小时后过期，刷新或点击“新对话”可重开。当 Linux 可用内存低于整机一半加 32 MiB 时暂停接收新消息。Go 服务以 80 MiB 为软限制、112 MiB 为硬限制。可用 `systemctl show piggy-admin -p MemoryCurrent -p MemoryPeak` 检查运行用量。
+
+## Node.js 网页管理端
 
 服务只需一个 Node.js 24 进程，默认监听 `127.0.0.1:8888`。在 `server/` 中执行 `npm ci --omit=dev`，配置 `PI_API_KEY` 后执行 `npm start`。浏览器打开 `http://127.0.0.1:8888` 即可对话。页面支持流式回复和新建对话，刷新后开始新的会话。
 
