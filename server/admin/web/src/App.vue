@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 
+import MarkdownMessage from "./MarkdownMessage.vue";
 import piggyMark from "./assets/piggy.svg?no-inline";
 
 const turns = ref([]);
@@ -75,9 +76,9 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
         <div class="day" v-if="i === 0 || date.format(turns[i - 1].created) !== date.format(row.created)"><span>{{ date.format(row.created) }}</span></div>
         <div class="entry mine"><div class="byline">你 <time :datetime="new Date(row.created).toISOString()">{{ time.format(row.created) }}</time></div>
           <span v-if="row.filename" class="file-note">{{ row.filename }} · {{ Math.ceil(row.filesize / 1024) }} KB</span>
-          <p class="message user">{{ row.question }}</p></div>
+          <MarkdownMessage class="user" :text="row.question" /></div>
         <div class="entry"><div class="byline"><img :src="piggyMark" alt="" width="20" height="20">Piggy</div>
-          <p v-if="row.answer" class="message assistant">{{ row.answer }}</p>
+          <MarkdownMessage v-if="row.answer" class="assistant" :text="row.answer" />
           <p v-if="row.status !== 'complete'" class="state">{{ row.status === 'pending' ? '正在回复…' : '回复未完成' }}</p>
         </div>
       </article>

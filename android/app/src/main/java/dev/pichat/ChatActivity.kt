@@ -19,6 +19,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 
 class ChatActivity : Activity() {
+    private val markdown by lazy { chatMarkdown(this) }
     private lateinit var chat: LinearLayout
     private lateinit var transcript: LinearLayout
     private lateinit var scroll: ScrollView
@@ -189,7 +190,7 @@ class ChatActivity : Activity() {
         val recent = client.recent
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
-            bubble(listOf(turn.optString("filename"), turn.getString("text")).filter { it.isNotBlank() }.joinToString("\n"), true)
+            bubble(turn.getString("text"), true, turn.optString("filename"))
             bubble(turn.getString("answer"), false)
         }
         input.setText(client.draft)
@@ -264,19 +265,24 @@ class ChatActivity : Activity() {
             packageManager.canRequestPackageInstalls()) updater.install()
     }
 
-    private fun bubble(value: String, user: Boolean): TextView {
+    private fun bubble(value: String, user: Boolean, fileLabel: String = ""): TextView {
         empty.visibility = View.GONE
         val row = column().apply { gravity = if (user) Gravity.END else Gravity.START }
         val role = text(if (user) "你" else "Piggy", 13f, muted)
         role.setPadding(dp(9), 0, dp(9), dp(5))
         row.addView(role, wrap, wrap)
-        val view = text(value, 17f, if (user) Color.WHITE else ink).apply {
+        if (fileLabel.isNotEmpty()) {
+            row.addView(text(fileLabel, 14f, muted).apply { setPadding(dp(9), 0, dp(9), dp(4)) }, wrap, wrap)
+        }
+        val view = text("", 17f, if (user) Color.WHITE else ink).apply {
             setTextIsSelectable(true)
+            setLinkTextColor(if (user) Color.WHITE else plum)
             setPadding(dp(17), dp(13), dp(17), dp(13))
             setLineSpacing(dp(2).toFloat(), 1f)
             background = shape(if (user) plum else Color.WHITE, 22, !user)
             maxWidth = (resources.displayMetrics.widthPixels * .81f).toInt()
         }
+        if (value.isNotEmpty()) markdown.setMarkdown(view, value)
         row.addView(view, wrap, wrap)
         transcript.addView(row, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(15) })
         return view
@@ -300,16 +306,29 @@ class ChatActivity : Activity() {
         generating = true
         controls()
         input.setText("")
-        bubble(if (file == null) message else client.fileLabel(file) + "\n" + message, true)
+        bubble(message, true, file?.let { client.fileLabel(it) }.orEmpty())
         val reply = bubble("", false).apply { hint = if (file == null) "正在回复…" else "正在发送附件…" }
         toBottom()
-        client.send(message, uploaded = { reply.hint = "正在回复…" }, delta = { part ->
+        val source = StringBuilder()
+        var scheduled = false
+        val render = Runnable {
+            scheduled = false
             val follow = !scroll.canScrollVertically(1)
-            reply.hint = ""
-            reply.append(part)
+            markdown.setMarkdown(reply, source.toString())
             if (follow) toBottom()
+        }
+        client.send(message, uploaded = { reply.hint = "正在回复…" }, delta = { part ->
+            reply.hint = ""
+            source.append(part)
+            if (!scheduled) {
+                scheduled = true
+                reply.postDelayed(render, 100)
+            }
         }, finished = { error ->
-            if (error != null) {
+            reply.removeCallbacks(render)
+            if (error == null) {
+                render.run()
+            } else {
                 reply.text = error
                 input.setText(message)
                 input.setSelection(input.length())
