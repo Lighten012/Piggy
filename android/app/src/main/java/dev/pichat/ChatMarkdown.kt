@@ -16,6 +16,10 @@ fun chatMarkdown(context: Context): Markwon = Markwon.builder(context)
     .usePlugin(StrikethroughPlugin.create())
     .usePlugin(TablePlugin.create(context))
     .usePlugin(object : AbstractMarkwonPlugin() {
+        override fun configureParser(builder: org.commonmark.parser.Parser.Builder) {
+            builder.inlineParserFactory(::cjkInlineParser)
+        }
+
         override fun configureTheme(builder: MarkwonTheme.Builder) {
             builder.headingTextSizeMultipliers(floatArrayOf(1.45f, 1.28f, 1.12f, 1.12f, 1.12f, 1.12f))
                 .headingBreakHeight(0)

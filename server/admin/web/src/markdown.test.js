@@ -14,3 +14,15 @@ test("web links remain usable and image descriptions do not fetch files", () => 
   assert.ok(renderMarkdown("[文档](https://example.org)").includes('href="https://example.org"'));
   assert.equal(renderMarkdown("![示意图](https://example.org/image.png)").trim(), "<p>示意图</p>");
 });
+
+test("CJK prose can touch a quoted strong phrase without adding spaces", () => {
+  for (const [input, phrase] of [
+    ["一对**“猫猫狗狗一起吃蛋挞”的配套头像**。", "“猫猫狗狗一起吃蛋挞”的配套头像"],
+    ["推荐**《新书》**给你", "《新书》"],
+    ["这里**很重要！**要记住", "很重要！"],
+  ]) assert.ok(renderMarkdown(input).includes(`<strong>${phrase}</strong>`));
+  const literal = "一对**“原样”**文字";
+  assert.ok(renderMarkdown("`" + literal + "`").includes("<code>" + literal + "</code>"));
+  assert.ok(!renderMarkdown("一对\\*\\*“原样”\\*\\*文字").includes("<strong>"));
+  assert.ok(!renderMarkdown("一对**“尚未结束").includes("<strong>"));
+});

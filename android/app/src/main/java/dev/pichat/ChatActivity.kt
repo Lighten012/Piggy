@@ -72,8 +72,8 @@ class ChatActivity : Activity() {
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     private fun mark() = ImageView(this).apply {
         setImageResource(R.drawable.piggy_portrait)
-        scaleType = ImageView.ScaleType.CENTER_CROP
-        background = shape(paper, 64)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        background = shape(paper, 4)
         clipToOutline = true
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }

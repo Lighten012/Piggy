@@ -87,5 +87,5 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
 </template>
 
 <style scoped>
-.piggy-avatar { object-fit: cover; border-radius: 50%; }
+.piggy-avatar { object-fit: contain; border-radius: 10%; }
 </style>
