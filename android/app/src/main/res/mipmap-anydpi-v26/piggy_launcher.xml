@@ -1,6 +1,4 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/portrait_background" />
-    <foreground>
-        <inset android:drawable="@drawable/piggy_launcher_photo" android:inset="23%" />
-    </foreground>
+    <background android:drawable="@drawable/piggy_launcher_bleed" />
+    <foreground android:drawable="@android:color/transparent" />
 </adaptive-icon>
