@@ -1,46 +1,54 @@
 # Piggy
 
-Piggy 是自用的 Android 聊天应用。APK 随附官方 `@earendil-works/pi-agent-core` 1.5.2。APK 内置 Node.js/V8（Javet Android），在应用进程内执行本地 JavaScript，Kotlin 通过 HTTPS 直连 OpenAI，按流显示回复。安装后可在能访问 OpenAI 的网络上直接对话。支持 Android 7.0 及以上的 ARM64 和 x86_64 设备。
+Android 原生客户端和 Vue 网页共用美国 CVM 上的 Pi Agent。手机仅与 Piggy 的 HTTPS 服务通信，APK 不包含模型密钥或 Node.js 运行时。两端使用相同的模型和提示词，各自的会话按身份隔离。
 
-## 构建个人 APK
+```text
+Android / Vue → Nginx (HTTPS 8888) → Go (回环 18888) → Pi Agent (回环 18889) → OpenAI
+```
 
-使用 Node.js 24、JDK 21、Android SDK 36 和 Gradle Wrapper。在项目根目录执行：
+Go 负责网页、管理员登录、设备绑定与转发。Pi 服务持有模型密钥、管理会话并返回流式回复。两者由 systemd 管理。Pi 最多同时生成两条回复，保存八个会话，每个保留最近十二轮成功问答。会话空闲一小时后在后续请求中清理，重启 Pi 会丢失上下文。浏览器刷新或手机重新打开聊天界面会开始新会话。设备授权跨服务重启保留。
+
+## Android
+
+使用 JDK 17、Android SDK 36 和仓库内的 Gradle Wrapper。
 
 ```sh
-(cd mobile-agent && npm ci)
 cd android
-PI_API_KEY_FILE=/path/to/private-key.txt ./gradlew :app:assembleDebug
+./gradlew :app:assembleDebug
 ```
 
-文件应仅包含个人 OpenAI API Key，也可由构建进程的 `PI_API_KEY` 环境变量提供。调试包位于 `android/app/build/outputs/apk/debug/app-debug.apk`。APK 和 Android 构建目录中都包含可提取的 Key，请仅自己保管。轮换 Key 后重新构建并安装。发布构建可使用 `:app:assembleRelease` 并以自己的 Android 签名密钥签名。
+调试包位于 `app/build/outputs/apk/debug/app-debug.apk`。分发时构建 `:app:assembleRelease`，用自己的 Android 发布密钥通过 `zipalign`、`apksigner` 签名。更新已安装应用需要相同签名。首次打开时填写单独发放的邀请码。清除应用数据或重新安装后需新邀请码。
 
-## 运行结构
+## CVM 部署
 
-- `mobile-agent/runtime.js` 使用 Pi 的 Agent、OpenAI Chat Completions 适配器和流式事件。默认模型是 `gpt-4.1-mini`。所有官方 Core 运行时导出均作为 `globalThis.PiAgentCore` 提供给本地扩展；构建脚本从锁定的 npm 包生成导出清单，应用启动时核对。
-- `MobileAgent.kt` 只向固定的 OpenAI HTTPS 地址附加凭证，保留系统证书和主机名验证。Pi 在专用线程运行。模型请求由 Kotlin 执行，Key 不会作为 JavaScript 的参数传递。
-- 一个聊天界面对应一个内存会话。点“新对话”重置上下文；关闭界面后清空。普通失败可重新发送。
-- `server/admin/` 是 Go + Vue 3 网页聊天管理端，Go 直接调用 OpenAI 流式接口。Android 继续在设备内运行 Pi。两端各自维护对话。
-- `server/server.ts` 保留使用官方 Pi Agent 的 Node.js 版管理端。
+在开发机运行 `server/admin/build-release.sh /path/to/output` 构建 Vue 静态文件、Linux x86-64 Go 程序和服务端 Pi bundle。将发布目录放到 `/lighten012/projects/Piggy/releases/<revision>`，让 `current` 指向该版本。在 `runtime/node` 安装 Node.js 24。使用仅 root 可读的 `server.env` 配置以下变量。
 
-## Go + Vue 网页管理端
+| 变量 | 用途 |
+|---|---|
+| PI_API_KEY | Pi 专用的 OpenAI 密钥 |
+| PI_MODEL | 可选，默认 gpt-4.1-mini |
+| PIGGY_ADMIN_PASSWORD | 网页账号 piggy 的独立密码 |
+| PIGGY_WORKER_TOKEN | Go 与 Pi 之间的随机内部密钥 |
 
-在仓库根目录构建 Linux x86-64 部署包，使用 Go 1.22+ 和 Node.js 22.12+。
+安装发布目录内的两个 systemd 单元，执行 `systemctl daemon-reload`、`systemctl enable --now piggy-pi piggy-admin`。已有服务切换版本后重启两个单元。按 `server/admin/nginx.conf.example` 配置本站证书和 HTTPS 8888。Go 不接收模型密钥，Pi 不接收网页密码。设备绑定保存在 systemd 的 `/var/lib/piggy-admin`，授权清单保存在项目的 `devices/`。保留两个目录即可保留原有设备授权。
+
+## 发放与撤销设备
+
+在 CVM 的 `/lighten012/projects/Piggy/current` 目录，以 root 执行：
 
 ```sh
-(cd server/admin/web && npm ci && npm run build)
-(cd server/admin && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../../piggy-admin .)
+python3 device.py issue '设备备注'
+python3 device.py list
+python3 device.py revoke <完整设备ID>
 ```
 
-将可执行文件 `piggy-admin` 与前端产物 `web/dist/` 放在同一个发布目录，让 `/lighten012/projects/Piggy/current` 指向它。在仅 root 可读的 `/lighten012/projects/Piggy/server.env` 里设置独立管理密码 `PIGGY_ADMIN_PASSWORD` 与 OpenAI 密钥 `PI_API_KEY`。默认模型为 `gpt-4.1-mini`，可用 `PI_MODEL` 指定兼容 OpenAI Chat Completions 的模型。
+issue 只显示一次邀请码。每份邀请码仅能绑定一个安装实例，重复绑定会拒绝。撤销在该设备的下一次请求生效。不要向设备使用者分发网页管理密码。Pi 的 systemd 日志记录完成的请求归属、时间、结果、输入和输出 token 数，避免记录消息正文或密钥。查看日志可运行 `journalctl -u piggy-pi`。
 
-安装 `server/admin/piggy-admin.service` 并通过 systemd 启动。Go 监听回环地址 18888。按 `server/admin/nginx.conf.example` 配置现有 Nginx，替换为本站证书路径，通过 HTTPS 8888 对外服务。运行 `nginx -t` 验证后重载，浏览器用用户名 `piggy` 登录。
+## 资源限制与测试
 
-最多同时生成 2 条回复，最多保留 8 个会话，每个会话保留最近 12 轮。空闲会话一小时后过期，刷新或点击“新对话”可重开。当 Linux 可用内存低于整机一半加 32 MiB 时暂停接收新消息。Go 服务以 80 MiB 为软限制、112 MiB 为硬限制。可用 `systemctl show piggy-admin -p MemoryCurrent -p MemoryPeak` 检查运行用量。
+Linux 可用内存低于总量一半加 32 MiB 时，Pi 暂停接受新消息。Go 服务的软/硬限制为 80/112 MiB，Pi 服务为 160/224 MiB。可用 `systemctl show piggy-pi piggy-admin -p MemoryCurrent -p MemoryMax` 查看服务用量。
 
-## Node.js 网页管理端
-
-服务只需一个 Node.js 24 进程，默认监听 `127.0.0.1:8888`。在 `server/` 中执行 `npm ci --omit=dev`，配置 `PI_API_KEY` 后执行 `npm start`。浏览器打开 `http://127.0.0.1:8888` 即可对话。页面支持流式回复和新建对话，刷新后开始新的会话。
-
-公网部署时，将 `server/` 及其生产依赖放在 `/opt/piggy/server/`，使 systemd 能从系统路径找到 Node.js 24。将域名或 IP 对应的 TLS 证书链与私钥分别放在 `/etc/piggy/fullchain.pem`、`/etc/piggy/privkey.pem`。配置仅 root 可读的 `/etc/piggy/server.env`，其中包含 `PI_API_KEY` 和单独的 `PIGGY_ADMIN_PASSWORD`。将 `server/deploy/piggy.service` 安装到 `/etc/systemd/system/`，运行 `systemctl daemon-reload` 和 `systemctl enable --now piggy`。安全组与主机防火墙需允许 TCP 8888。浏览器通过 HTTPS 访问，用户名为 `piggy`。轮换证书后重启服务。
-
-部署前后可用 `awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "%.1f%% used\n",100*(1-a/t)}' /proc/meminfo` 检查整机内存，并用 `systemctl show piggy -p MemoryCurrent -p MemoryPeak` 检查服务用量。服务最多同时生成 2 个回复，保留 8 个会话，每个请求最多携带最近 12 轮历史。Linux 上剩余可用内存低于总量的一半加 32 MiB 时，会暂停接受新对话请求。systemd 单元以 160 MiB 为软限制，224 MiB 为硬限制，应按目标机器的实测余量下调。
+```sh
+(cd server/admin && go test -race ./...)
+(cd server && npm ci && node --test chat.test.ts)
+```

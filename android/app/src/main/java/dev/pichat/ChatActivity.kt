@@ -1,5 +1,6 @@
 package dev.pichat
 
+import android.app.AlertDialog
 import android.app.Activity
 import android.os.Bundle
 import android.graphics.Color
@@ -17,7 +18,7 @@ class ChatActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var send: Button
     private lateinit var reset: Button
-    private lateinit var agent: MobileAgent
+    private lateinit var client: PiggyClient
     private var pendingResponse: TextView? = null
     private var pendingDraft = ""
     private val ink = Color.rgb(26, 45, 40)
@@ -58,7 +59,7 @@ class ChatActivity : Activity() {
             background = shape(Color.rgb(227, 237, 229), 16)
             setTextColor(green)
             setOnClickListener {
-                agent.reset()
+                client.reset()
                 transcript.removeAllViews()
                 input.setText("")
                 input.requestFocus()
@@ -93,24 +94,45 @@ class ChatActivity : Activity() {
             fitsSystemWindows = true
             addView(root)
         })
-        controls(false)
-        agent = MobileAgent(this, onReady = { controls(true) }, onDelta = { delta ->
-            pendingResponse?.append(delta)
-            toBottom()
-        }, onFinished = { error ->
-            if (error.isNotEmpty()) {
-                pendingResponse?.text = error
-                input.setText(pendingDraft)
-                input.setSelection(input.length())
-            }
-            pendingResponse = null
-            pendingDraft = ""
-            controls(true)
-        }, onInitFailure = {
-            controls(false)
-            bubble("无法启动内置 Pi 运行时，请重新打开应用。", false)
-        })
+        client = PiggyClient(this)
+        controls(client.activated)
+        if (!client.activated) activate()
+    }
 
+    private fun activate() {
+        val code = EditText(this).apply {
+            hint = "输入设备邀请码"
+            setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val panel = LinearLayout(this).apply {
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(code, LinearLayout.LayoutParams(-1, -2))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("连接 Piggy")
+            .setMessage("首次使用请填写管理员提供的邀请码。对话由 Piggy 服务器处理。")
+            .setView(panel).setPositiveButton("连接", null)
+            .setNegativeButton("退出") { _, _ -> finish() }
+            .setCancelable(false).show()
+        val connect = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+        connect.setOnClickListener {
+            val value = code.text.toString().trim()
+            if (!value.matches(Regex("[a-f0-9]{64}"))) {
+                code.error = "请输入完整的邀请码"
+                return@setOnClickListener
+            }
+            connect.isEnabled = false
+            client.activate(value) { error ->
+                if (error == null) {
+                    dialog.dismiss()
+                    controls(true)
+                } else {
+                    code.error = error
+                    connect.isEnabled = true
+                }
+            }
+        }
     }
 
     private fun bubble(text: String, user: Boolean): TextView {
@@ -139,7 +161,21 @@ class ChatActivity : Activity() {
         input.setText("")
         bubble(message, true)
         pendingResponse = bubble("", false).apply { hint = "正在回复…" }
-        agent.prompt(message)
+        client.send(message, delta = { part ->
+            pendingResponse?.hint = ""
+            pendingResponse?.append(part)
+            toBottom()
+        }, finished = { error ->
+            if (error != null) {
+                pendingResponse?.text = error
+                input.setText(pendingDraft)
+                input.setSelection(input.length())
+            }
+            pendingResponse = null
+            pendingDraft = ""
+            controls(client.activated)
+            if (!client.activated) activate()
+        })
     }
 
     private fun controls(enabled: Boolean) {
@@ -149,7 +185,7 @@ class ChatActivity : Activity() {
     }
 
     override fun onDestroy() {
-        agent.close()
+        client.close()
         super.onDestroy()
     }
 }

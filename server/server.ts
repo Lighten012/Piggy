@@ -18,12 +18,16 @@ if ((!["127.0.0.1", "::1"].includes(host) && (!password || !tls)) ||
 }
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const expectedAuth = password ? digest("Basic " + Buffer.from("piggy:" + password).toString("base64")) : null;
+const workerToken = process.env.PIGGY_WORKER_TOKEN;
+if (workerToken && host !== "127.0.0.1") throw new Error("Worker must use loopback");
+const workerAuth = workerToken ? digest("Bearer " + workerToken) : null;
 const assets = new Map<string, {type: string; data: Buffer}>();
 for (const [path, file, type] of [
   ["/", "index.html", "text/html; charset=utf-8"],
   ["/chat.js", "chat.js", "text/javascript; charset=utf-8"],
   ["/style.css", "style.css", "text/css; charset=utf-8"],
 ]) {
+  if (workerAuth) break;
   assets.set(path, {type, data: readFileSync(new URL("./web/" + file, import.meta.url))});
 }
 
@@ -50,7 +54,7 @@ const model: Model<"openai-completions"> = {
   baseUrl: fixturePort ? `http://127.0.0.1:${fixturePort}/v1` : "https://api.openai.com/v1",
 };
 const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
-const sessions = new Map<string, { agent: Agent; busy: boolean; lastUsed: number }>();
+const sessions = new Map<string, { owner: string; agent: Agent; busy: boolean; lastUsed: number }>();
 
 function newAgent() {
   return new Agent({
@@ -65,7 +69,7 @@ function reject(res: ServerResponse, status: number, error: string) {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify({ error }));
 }
-async function chat(req: IncomingMessage, res: ServerResponse) {
+async function chat(req: IncomingMessage, res: ServerResponse, owner: string) {
   if (req.url !== "/chat" || req.method !== "POST") return reject(res, 404, "未知请求");
   if (req.headers.origin && req.headers.origin !== (tls ? "https://" : "http://") + req.headers.host) {
     return reject(res, 403, "请求来源无效");
@@ -96,13 +100,14 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   }
   const id = data.session ?? randomUUID();
   let session = sessions.get(id);
+  if (session && session.owner !== owner) return reject(res, 410, "会话已过期，请新建对话");
   if (!session) {
     if (data.session != null) return reject(res, 410, "会话已过期，请新建对话");
     if (sessions.size >= 8) {
       const idle = [...sessions].filter(([, s]) => !s.busy).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
       sessions.delete(idle[0][0]);
     }
-    session = { agent: newAgent(), busy: false, lastUsed: Date.now() };
+    session = { owner, agent: newAgent(), busy: false, lastUsed: Date.now() };
     sessions.set(id, session);
   }
   if (session.busy) return reject(res, 409, "上一条消息仍在生成");
@@ -122,6 +127,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       emit({ delta: event.assistantMessageEvent.delta });
     }
   });
+  const started = Date.now();
   let complete = false;
   try {
     await agent.prompt(data.text.trim());
@@ -133,8 +139,13 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       throw new Error("Generation failed");
     }
     emit({ done: true, session: id });
+    agent.state.messages = agent.state.messages.slice(-24);
     complete = true;
+    console.info(JSON.stringify({event:"chat", owner, model:model.id, status:"ok",
+      durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
+      cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
   } catch {
+    console.info(JSON.stringify({event:"chat", owner, status:"failed", durationMs:Date.now()-started}));
     if (!res.destroyed) emit({ error: "生成失败，请检查后端密钥、模型权限或网络后重试" });
   } finally {
     clearTimeout(timer);
@@ -153,7 +164,15 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
-  if (expectedAuth && !timingSafeEqual(digest(req.headers.authorization || ""), expectedAuth)) {
+  let owner = "admin";
+  if (workerAuth) {
+    const value = req.headers["x-piggy-owner"];
+    if (!timingSafeEqual(digest(req.headers.authorization || ""), workerAuth) ||
+        typeof value !== "string" || !/^(admin|device-[a-f0-9]{64})$/.test(value)) {
+      return reject(res, 401, "身份无效");
+    }
+    owner = value;
+  } else if (expectedAuth && !timingSafeEqual(digest(req.headers.authorization || ""), expectedAuth)) {
     res.setHeader("WWW-Authenticate", 'Basic realm="Piggy", charset="UTF-8"');
     return reject(res, 401, "请登录 Piggy");
   }
@@ -162,7 +181,7 @@ function handle(req: IncomingMessage, res: ServerResponse) {
     res.setHeader("Content-Type", asset.type);
     return res.end(req.method === "HEAD" ? undefined : asset.data);
   }
-  chat(req, res).catch(() => {
+  chat(req, res, owner).catch(() => {
     if (!res.headersSent) reject(res, 500, "服务端请求失败");
     else res.end();
   });

@@ -5,7 +5,8 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
-test("streams replies and preserves history across a failed turn", async t => {
+for (const worker of [false, true]) test(
+  (worker ? "private Pi worker" : "standalone admin") + " streams replies and preserves successful history", async t => {
   const histories: string[][] = [];
   const fixture = createServer(async (req, res) => {
     let body = "";
@@ -29,8 +30,8 @@ test("streams replies and preserves history across a failed turn", async t => {
   fixture.listen(0, "127.0.0.1");
   await once(fixture, "listening");
   t.after(() => fixture.close());
-  const child = spawn(process.execPath, ["server.ts"], {
-    env: { ...process.env, PIGGY_ADMIN_PASSWORD: "fixture-password", HOST: "127.0.0.1", PI_API_KEY: "", PI_MODEL: "gpt-4.1-mini", PORT: "0",
+  const child = spawn(process.execPath, [worker ? process.env.PIGGY_TEST_BUNDLE || "server.ts" : "server.ts"], {
+    env: { ...process.env, PIGGY_ADMIN_PASSWORD: "fixture-password", PIGGY_WORKER_TOKEN: worker ? "fixture-worker" : "", HOST: "127.0.0.1", PI_API_KEY: "", PI_MODEL: "gpt-4.1-mini", PORT: "0",
       PI_LOCAL_FIXTURE_PORT: String((fixture.address() as AddressInfo).port) },
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -39,13 +40,13 @@ test("streams replies and preserves history across a failed turn", async t => {
   const port = String(line).match(/port (\d+)/)?.[1];
   assert.ok(port);
   const base = "http://127.0.0.1:" + port;
-  const headers = {authorization: "Basic " + Buffer.from("piggy:fixture-password").toString("base64"),
+  const headers = { "x-piggy-owner": "admin", authorization: worker ? "Bearer fixture-worker" : "Basic " + Buffer.from("piggy:fixture-password").toString("base64"),
     "content-type": "application/json", origin: base};
   assert.equal((await fetch(base)).status, 401);
   assert.equal((await fetch(base + "/chat", {method: "POST"})).status, 401);
   const page = await fetch(base, { headers });
-  assert.equal(page.status, 200);
-  assert.match(await page.text(), /<textarea/);
+  assert.equal(page.status, worker ? 404 : 200);
+  if (!worker) assert.match(await page.text(), /<textarea/);
   assert.equal((await fetch(base + "/chat", {method: "POST",
     headers: {...headers, origin: "https://another.example"}, body: "{}"})).status, 403);
   async function send(text: string, session?: string) {
@@ -59,6 +60,12 @@ test("streams replies and preserves history across a failed turn", async t => {
   assert.equal(first[0].delta, "OK");
   const id = first.at(-1).session;
   assert.ok(id);
+  if (worker) {
+    const other = await fetch(base + "/chat", {method:"POST",
+      headers:{...headers, "x-piggy-owner":"device-" + "a".repeat(64)},
+      body:JSON.stringify({text:"another owner", session:id})});
+    assert.equal(other.status,410);
+  }
   assert.ok((await send("failed", id)).at(-1).error);
   assert.equal((await send("two", id)).at(-1).session, id);
   assert.deepEqual(histories[2], ["one", "two"]);

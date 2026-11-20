@@ -1,13 +1,15 @@
 [Unit]
 Description=Piggy Go chat admin
-After=network-online.target
-Wants=network-online.target
+After=network-online.target piggy-pi.service
+Wants=network-online.target piggy-pi.service
 
 [Service]
 DynamicUser=yes
 WorkingDirectory=/lighten012/projects/Piggy/current
 ExecStart=/lighten012/projects/Piggy/current/piggy-admin
 EnvironmentFile=/lighten012/projects/Piggy/server.env
+StateDirectory=piggy-admin
+UnsetEnvironment=PI_API_KEY
 Environment=GOMEMLIMIT=64MiB
 MemoryAccounting=yes
 MemoryHigh=80M
