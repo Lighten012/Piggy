@@ -1,5 +1,6 @@
 package dev.pichat
 
+import android.app.Dialog
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ActivityNotFoundException
@@ -26,6 +27,8 @@ import androidx.core.view.WindowInsetsCompat
 
 class ChatActivity : Activity() {
     private val markdown by lazy { chatMarkdown(this) }
+    private lateinit var menu: ImageButton
+    private var drawer: Dialog? = null
     private lateinit var chat: LinearLayout
     private lateinit var transcript: LinearLayout
     private lateinit var scroll: ScrollView
@@ -48,11 +51,12 @@ class ChatActivity : Activity() {
     private var selecting = false
     private var generating = false
     private var promptedVersion: String? = null
-    private val ink = Color.rgb(58, 42, 48)
-    private val muted = Color.rgb(113, 92, 98)
-    private val plum = Color.rgb(117, 66, 83)
-    private val paper = Color.rgb(252, 248, 245)
-    private val line = Color.rgb(232, 218, 216)
+    private val ink = Color.rgb(48, 42, 54)
+    private val muted = Color.rgb(101, 92, 111)
+    private val plum = Color.rgb(105, 77, 131)
+    private val paper = Color.rgb(250, 249, 252)
+    private val line = Color.rgb(225, 220, 231)
+    private val lavender = Color.rgb(229, 215, 247)
     private val match = LinearLayout.LayoutParams.MATCH_PARENT
     private val wrap = LinearLayout.LayoutParams.WRAP_CONTENT
 
@@ -94,30 +98,39 @@ class ChatActivity : Activity() {
         }
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
-            v.setPadding(bars.left + dp(18), bars.top + dp(8), bars.right + dp(18), bars.bottom + dp(10))
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
-        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(mark(), LinearLayout.LayoutParams(dp(43), dp(43)))
-        val title = text("Piggy", 30f).apply { typeface = Typeface.create("serif", Typeface.BOLD_ITALIC) }
-        header.addView(title, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(10) })
-        header.addView(text("v" + BuildConfig.VERSION_NAME, 13f, muted))
-        root.addView(header, match, dp(60))
+        val header = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), 0, dp(12), 0)
+            setBackgroundColor(paper)
+        }
+        menu = navButton(R.drawable.nav_menu, "打开侧边栏") { showDrawer() }
+        header.addView(menu, dp(48), dp(48))
+        header.addView(mark(), LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(3) })
+        header.addView(text("Piggy", 18f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
+            LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(8) })
+        root.addView(header, match, dp(48))
+        root.addView(View(this).apply { setBackgroundColor(line) }, match, 1)
 
-        chat = column()
+        chat = column().apply {
+            setBackgroundResource(R.drawable.chat_paper)
+            setPadding(dp(14), 0, dp(14), dp(8))
+        }
         scroll = ScrollView(this).apply { isFillViewport = true; isVerticalScrollBarEnabled = false }
         transcript = column().apply { setPadding(dp(1), dp(14), dp(1), dp(6)) }
         empty = column().apply {
             gravity = Gravity.CENTER
-            addView(mark(), dp(72), dp(72))
-            addView(text("今天想聊点什么？", 22f), LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(18) })
+            addView(mark(), dp(58), dp(58))
+            addView(text("今天想聊点什么？", 20f), LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(18) })
         }
         transcript.addView(empty, LinearLayout.LayoutParams(match, 0, 1f))
         scroll.addView(transcript)
         chat.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
         val composerCard = column().apply {
             background = shape(Color.WHITE, 26, true)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            setPadding(dp(4), dp(3), dp(4), dp(3))
             elevation = dp(2).toFloat()
         }
         fileRow = LinearLayout(this)
@@ -167,7 +180,7 @@ class ChatActivity : Activity() {
             contentDescription = "发送"
             setImageResource(R.drawable.send_arrow)
             scaleType = ImageView.ScaleType.CENTER
-            background = pill()
+            background = android.graphics.drawable.InsetDrawable(pill(), dp(4))
             setOnClickListener { submit() }
         }
         composer.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(8) })
@@ -176,7 +189,7 @@ class ChatActivity : Activity() {
         root.addView(chat, LinearLayout.LayoutParams(match, 0, 1f))
         chat.visibility = View.GONE
 
-        gate = column().apply { gravity = Gravity.CENTER }
+        gate = column().apply { gravity = Gravity.CENTER; setPadding(dp(20), 0, dp(20), 0) }
         val card = column().apply {
             gravity = Gravity.CENTER
             background = shape(Color.WHITE, 30, true)
@@ -210,6 +223,65 @@ class ChatActivity : Activity() {
         input.setText(client.draft)
         showFile()
         updater.checkOnLaunch()
+    }
+
+    private fun navButton(icon: Int, label: String, click: () -> Unit) = ImageButton(this).apply {
+        setImageResource(icon)
+        contentDescription = label
+        scaleType = ImageView.ScaleType.CENTER
+        background = RippleDrawable(ColorStateList.valueOf(0x22694D83), null, shape(Color.WHITE, 30))
+        setOnClickListener { click() }
+    }
+
+    private fun drawerWidth() = minOf(dp(308), resources.displayMetrics.widthPixels - dp(52))
+
+    private fun showDrawer() {
+        if (!versionCurrent || drawer != null) return
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        dialog.setTitle("侧边栏")
+        val panel = column().apply {
+            background = shape(paper, 0)
+            setPadding(dp(18), dp(14), dp(18), dp(20))
+        }
+        ViewCompat.setAccessibilityPaneTitle(panel, "侧边栏")
+        val heading = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        heading.addView(mark(), dp(36), dp(36))
+        heading.addView(text("Piggy", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
+            LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(10) })
+        heading.addView(navButton(R.drawable.nav_close, "关闭侧边栏") { dialog.dismiss() }, dp(48), dp(48))
+        panel.addView(heading, match, wrap)
+        val current = text("当前对话", 16f, plum).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), 0, dp(12), 0)
+            setCompoundDrawablesWithIntrinsicBounds(R.drawable.nav_chat, 0, 0, 0)
+            compoundDrawablePadding = dp(12)
+            background = RippleDrawable(ColorStateList.valueOf(0x22694D83), shape(lavender, 16), null)
+            isSelected = true
+            isFocusable = true
+            setOnClickListener { dialog.dismiss() }
+        }
+        panel.addView(current, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(26) })
+        panel.addView(Space(this), LinearLayout.LayoutParams(1, 0, 1f))
+        panel.addView(text("v" + BuildConfig.VERSION_NAME, 12f, muted).apply { setPadding(dp(12),0,0,0) })
+        dialog.setContentView(panel)
+        dialog.window?.apply {
+            setGravity(Gravity.LEFT)
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setDimAmount(.30f)
+            setWindowAnimations(R.style.DrawerMotion)
+            setLayout(drawerWidth(), match)
+        }
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.setOnDismissListener { drawer = null }
+        drawer = dialog
+        dialog.show()
+    }
+
+    override fun onConfigurationChanged(config: android.content.res.Configuration) {
+        super.onConfigurationChanged(config)
+        drawer?.window?.setLayout(drawerWidth(), match)
     }
 
     private fun showFile() {
@@ -257,7 +329,7 @@ class ChatActivity : Activity() {
         setOnClickListener { openFile(file) }
         addView(ImageView(this@ChatActivity).apply {
             setImageResource(R.drawable.attachment_document)
-            background = shape(Color.rgb(245, 231, 233), 10)
+            background = shape(Color.rgb(240, 233, 247), 10)
             setPadding(dp(7),dp(7),dp(7),dp(7))
         }, dp(36), dp(42))
         val labels = column()
@@ -310,6 +382,8 @@ class ChatActivity : Activity() {
 
     private fun showVersion(state: UpdateState) {
         versionCurrent = state == UpdateState.Current
+        menu.isEnabled = versionCurrent
+        if (!versionCurrent) drawer?.dismiss()
         chat.visibility = if (versionCurrent) View.VISIBLE else View.GONE
         gate.visibility = if (versionCurrent) View.GONE else View.VISIBLE
         controls()
@@ -375,9 +449,8 @@ class ChatActivity : Activity() {
     private fun bubble(value: String, user: Boolean, files: List<JSONObject> = emptyList(), legacyLabel: String = ""): TextView {
         empty.visibility = View.GONE
         val row = column().apply { gravity = if (user) Gravity.END else Gravity.START }
-        val role = text(if (user) "你" else "Piggy", 13f, muted)
-        role.setPadding(dp(9), 0, dp(9), dp(5))
-        if (user) row.addView(role, wrap, wrap) else {
+        if (!user) {
+            val role = text("Piggy", 12f, muted)
             val byline = LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(5), 0, 0, dp(5))
@@ -391,7 +464,7 @@ class ChatActivity : Activity() {
             row.addView(text(legacyLabel, 14f, muted), wrap, wrap)
         val group = if (files.isEmpty()) row else column().apply {
             val width = minOf(dp(276), (resources.displayMetrics.widthPixels * .76f).toInt())
-            background = shape(Color.rgb(247, 238, 239), 20, true)
+            background = shape(lavender, 20)
             setPadding(dp(5),dp(5),dp(5),dp(5))
             row.addView(this,width,wrap)
             var index = 0
@@ -422,12 +495,12 @@ class ChatActivity : Activity() {
                 addView(item, LinearLayout.LayoutParams(match,height).apply { topMargin = if (childCount == 0) 0 else dp(4) })
             }
         }
-        val view = text("", 17f, if (user && files.isEmpty()) Color.WHITE else ink).apply {
+        val view = text("", 16f, ink).apply {
             setTextIsSelectable(true)
-            setLinkTextColor(if (user && files.isEmpty()) Color.WHITE else plum)
+            setLinkTextColor(plum)
             setPadding(dp(17), dp(13), dp(17), dp(13))
             setLineSpacing(dp(2).toFloat(), 1f)
-            if (files.isEmpty()) background = shape(if (user) plum else Color.WHITE, 22, !user)
+            if (files.isEmpty()) background = shape(if (user) lavender else Color.WHITE, 20, !user)
             maxWidth = (resources.displayMetrics.widthPixels * .81f).toInt()
         }
         if (value.isNotEmpty()) markdown.setMarkdown(view, value)
@@ -495,6 +568,7 @@ class ChatActivity : Activity() {
     }
 
     override fun onDestroy() {
+        drawer?.dismiss()
         updater.close()
         client.close()
         super.onDestroy()

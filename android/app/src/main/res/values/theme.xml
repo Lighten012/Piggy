@@ -1,11 +1,15 @@
 <resources>
     <style name="PiggyTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:colorAccent">#754253</item>
-        <item name="android:windowBackground">#FCF8F5</item>
-        <item name="android:statusBarColor">#FCF8F5</item>
+        <item name="android:colorAccent">#70528D</item>
+        <item name="android:windowBackground">#FAF9FC</item>
+        <item name="android:statusBarColor">#FAF9FC</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#FCF8F5</item>
+        <item name="android:navigationBarColor">#FAF9FC</item>
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:fontFamily">sans</item>
+    </style>
+    <style name="DrawerMotion">
+        <item name="android:windowEnterAnimation">@anim/drawer_enter</item>
+        <item name="android:windowExitAnimation">@anim/drawer_exit</item>
     </style>
 </resources>

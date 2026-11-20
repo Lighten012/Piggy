@@ -1,2 +1,2 @@
 <bitmap xmlns:android="http://schemas.android.com/apk/res/android"
-    android:src="@drawable/piggy_portrait" android:gravity="fill" />
+    android:src="@drawable/piggy_launcher_photo" android:gravity="fill" />
