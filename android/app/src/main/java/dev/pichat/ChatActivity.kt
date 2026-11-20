@@ -16,7 +16,6 @@ class ChatActivity : Activity() {
     private lateinit var scroll: ScrollView
     private lateinit var input: EditText
     private lateinit var send: Button
-    private lateinit var reset: Button
     private lateinit var client: PiggyClient
     private var pendingResponse: TextView? = null
     private var pendingDraft = ""
@@ -54,17 +53,6 @@ class ChatActivity : Activity() {
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val title = label("Piggy", 31f).apply { typeface = Typeface.create("serif", Typeface.BOLD) }
         header.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
-        reset = button("新对话").apply {
-            background = shape(Color.rgb(227, 237, 229), 16)
-            setTextColor(green)
-            setOnClickListener {
-                client.reset()
-                transcript.removeAllViews()
-                input.setText("")
-                input.requestFocus()
-            }
-        }
-        header.addView(reset, LinearLayout.LayoutParams(-2, dp(46)))
         root.addView(header)
         transcript = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -94,6 +82,13 @@ class ChatActivity : Activity() {
             addView(root)
         })
         client = PiggyClient(this)
+        val recent = client.recent
+        for (i in 0 until recent.length()) {
+            val turn = recent.getJSONObject(i)
+            bubble(turn.getString("text"), true)
+            bubble(turn.getString("answer"), false)
+        }
+        input.setText(client.draft)
     }
 
     private fun bubble(text: String, user: Boolean): TextView {
@@ -140,7 +135,6 @@ class ChatActivity : Activity() {
 
     private fun controls(enabled: Boolean) {
         send.isEnabled = enabled
-        reset.isEnabled = enabled
         input.isEnabled = enabled
     }
 

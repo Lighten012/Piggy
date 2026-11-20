@@ -28,7 +28,10 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			owner = "mobile"
 		}
 		pr.SetURL(target)
-		pr.Out.URL.Path, pr.Out.URL.RawPath, pr.Out.URL.RawQuery = "/chat", "", ""
+		pr.Out.URL.RawPath = ""
+		if owner == "mobile" {
+			pr.Out.URL.Path, pr.Out.URL.RawQuery = "/chat", ""
+		}
 		pr.Out.Header.Set("X-Piggy-Owner", owner)
 		pr.Out.Header.Set("Authorization", "Bearer "+workerToken)
 		pr.Out.Header.Del("Cookie")
@@ -43,6 +46,10 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			return
 		}
 		if r.URL.Path == mobileChat {
+			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Mode") != "" {
+				fail(w, 403, "网页仅支持查看记录")
+				return
+			}
 			if r.Method != http.MethodPost {
 				w.Header().Set("Allow", "POST")
 				fail(w, 405, "请使用 POST")
@@ -58,7 +65,12 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			fail(w, 401, "请登录 Piggy")
 			return
 		}
-		if r.URL.Path == "/chat" {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			fail(w, 405, "网页仅支持查看记录")
+			return
+		}
+		if r.URL.Path == "/history" && r.Method == http.MethodGet {
 			proxy.ServeHTTP(w, r)
 			return
 		}

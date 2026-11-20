@@ -4,9 +4,15 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { Journal } from "./journal.ts";
 
-for (const worker of [false, true]) test(
-  (worker ? "private Pi worker" : "standalone admin") + " streams replies and preserves successful history", async t => {
+test("records accepted mobile turns and restores context after restart", async t => {
+  const dir = mkdtempSync(join(tmpdir(),"piggy-test-"));
+  t.after(() => rmSync(dir,{recursive:true,force:true}));
   const histories: string[][] = [];
   const fixture = createServer(async (req, res) => {
     let body = "";
@@ -30,43 +36,65 @@ for (const worker of [false, true]) test(
   fixture.listen(0, "127.0.0.1");
   await once(fixture, "listening");
   t.after(() => fixture.close());
-  const child = spawn(process.execPath, [worker ? process.env.PIGGY_TEST_BUNDLE || "server.ts" : "server.ts"], {
-    env: { ...process.env, PIGGY_ADMIN_PASSWORD: "fixture-password", PIGGY_WORKER_TOKEN: worker ? "fixture-worker" : "", HOST: "127.0.0.1", PI_API_KEY: "", PI_MODEL: "gpt-4.1-mini", PORT: "0",
-      PI_LOCAL_FIXTURE_PORT: String((fixture.address() as AddressInfo).port) },
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  t.after(() => child.kill());
-  const [line] = await once(child.stdout, "data");
-  const port = String(line).match(/port (\d+)/)?.[1];
-  assert.ok(port);
-  const base = "http://127.0.0.1:" + port;
-  const headers = { "x-piggy-owner": "admin", authorization: worker ? "Bearer fixture-worker" : "Basic " + Buffer.from("piggy:fixture-password").toString("base64"),
-    "content-type": "application/json", origin: base};
-  assert.equal((await fetch(base)).status, 401);
-  assert.equal((await fetch(base + "/chat", {method: "POST"})).status, 401);
-  const page = await fetch(base, { headers });
-  assert.equal(page.status, worker ? 404 : 200);
-  if (!worker) assert.match(await page.text(), /<textarea/);
-  assert.equal((await fetch(base + "/chat", {method: "POST",
-    headers: {...headers, origin: "https://another.example"}, body: "{}"})).status, 403);
-  async function send(text: string, session?: string) {
-    const res = await fetch("http://127.0.0.1:" + port + "/chat", {
-      method: "POST", headers,
-      body: JSON.stringify({ text, session }),
+  async function start() {
+    const child = spawn(process.execPath, [process.env.PIGGY_TEST_BUNDLE || "server.ts"], {
+      env: {...process.env, PIGGY_WORKER_TOKEN:"fixture-worker",HOST:"127.0.0.1",PORT:"0", PI_API_KEY:"",
+        PIGGY_DB:join(dir,"test.sqlite"),PI_LOCAL_FIXTURE_PORT:String((fixture.address() as AddressInfo).port)},
+      stdio:["ignore","pipe","inherit"]
     });
-    return (await res.text()).trim().split("\n").map(line => JSON.parse(line));
+    t.after(()=>child.kill());
+    const [line] = await once(child.stdout,"data");
+    const port = String(line).match(/port (\d+)/)?.[1];
+    assert.ok(port);
+    return {child,base:"http://127.0.0.1:"+port};
   }
-  const first = await send("one");
-  assert.equal(first[0].delta, "OK");
-  const id = first.at(-1).session;
-  assert.ok(id);
-  if (worker) {
-    const other = await fetch(base + "/chat", {method:"POST",
-      headers:{...headers, "x-piggy-owner":"mobile"},
-      body:JSON.stringify({text:"another owner", session:id})});
-    assert.equal(other.status,410);
+  let worker = await start();
+  const auth = {authorization:"Bearer fixture-worker","content-type":"application/json"};
+  const mobile = {...auth,"x-piggy-owner":"mobile"}, admin = {...auth,"x-piggy-owner":"admin"};
+  const session = randomUUID();
+  async function send(text:string, request = randomUUID(), context = session) {
+    const res = await fetch(worker.base+"/chat",{method:"POST",headers:mobile,body:JSON.stringify({text,session:context,request})});
+    assert.equal(res.status,200);
+    return (await res.text()).trim().split("\n").map(line=>JSON.parse(line));
   }
-  assert.ok((await send("failed", id)).at(-1).error);
-  assert.equal((await send("two", id)).at(-1).session, id);
-  assert.deepEqual(histories[2], ["one", "two"]);
+  assert.equal((await fetch(worker.base+"/history")).status,401);
+  assert.notEqual((await fetch(worker.base+"/history",{headers:mobile})).status,200);
+  assert.equal((await fetch(worker.base+"/chat",{method:"POST",headers:admin})).status,405);
+  const request = randomUUID();
+  const first = await send("one",request);
+  assert.equal(first[0].delta,"OK");
+  assert.equal(first.at(-1).session,session);
+  assert.deepEqual(await send("one",request),first);
+  assert.equal(histories.length,1);
+  assert.ok((await send("failed")).at(-1).error);
+  const stopped = once(worker.child,"exit");worker.child.kill();await stopped;
+  worker = await start();
+  assert.equal((await send("two")).at(-1).session,session);
+  assert.deepEqual(histories[2],["one","two"]);
+  await send("separate",randomUUID(),randomUUID());
+  assert.deepEqual(histories[3],["separate"]);
+  const list = await (await fetch(worker.base+"/history",{headers:admin})).json();
+  assert.deepEqual(list.turns.map(r=>[r.question,r.answer,r.status]),[
+    ["one","OK","complete"],["failed","","failed"],["two","OK","complete"],["separate","OK","complete"]]);
+  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","id","question","status"]);
+  assert.equal((await (await fetch(worker.base+"/history?after=2",{headers:admin})).json()).turns.length,2);
+});
+
+test("history pages and interrupted turns survive reopening SQLite", t => {
+  const dir=mkdtempSync(join(tmpdir(),"piggy-pages-"));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,"test.sqlite");
+  const journal=new Journal(path);
+  for(let i=1;i<=45;i++){
+    const id=journal.begin("phone",String(i),"question"+i);
+    journal.complete(id,"ok",[{role:"user",content:"question"+i,timestamp:i}]);
+  }
+  journal.begin("phone","46","interrupted");
+  const reopened=new Journal(path);
+  assert.equal(reopened.lookup("phone","46")?.status,"failed");
+  assert.equal(reopened.page(null,null)[0].id,7);
+  assert.equal(reopened.page(null,7).length,6);
+  const context=reopened.previous("phone");
+  assert.equal(context.length,12);
+  assert.equal(context[0].content,"question34");
 });

@@ -1,90 +1,81 @@
 <script setup>
-import { nextTick, ref } from "vue";
+import { nextTick, onMounted, onUnmounted, ref } from "vue";
 
-const messages = ref([]);
-const draft = ref("");
-const busy = ref(false);
-const status = ref("");
+const turns = ref([]);
 const thread = ref(null);
-const input = ref(null);
-let session;
+const loading = ref(true);
+const older = ref(false);
+const error = ref("");
+const format = new Intl.DateTimeFormat("zh-CN", {dateStyle:"medium", timeStyle:"short"});
+let fetching = false, timer;
+const controller = new AbortController();
 
-function reset() {
-  session = undefined;
-  messages.value = [];
-  draft.value = status.value = "";
-  input.value.focus();
-}
-
-function enter(event) {
-  if (event.shiftKey || event.isComposing || event.keyCode === 229) return;
-  event.preventDefault();
-  send();
-}
-
-async function send() {
-  const text = draft.value.trim();
-  if (!text || busy.value) return;
-  const start = messages.value.length;
-  messages.value.push({ role: "user", text }, { role: "assistant", text: "" });
-  busy.value = true;
-  draft.value = "";
-  status.value = "正在回复…";
-  await nextTick();
-  thread.value.scrollTop = thread.value.scrollHeight;
+async function refresh(back = false) {
+  if (fetching) return;
+  fetching = true;
+  const box = thread.value;
+  const first = turns.value[0], last = turns.value.at(-1);
+  const pending = turns.value.find(row => row.status === "pending");
+  let query = "";
+  if (back && first) query = "?before=" + first.id;
+  else if (last) query = "?after=" + (pending ? pending.id - 1 : last.id);
   try {
-    const response = await fetch("/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, session }),
-    });
-    if (!response.ok) throw new Error((await response.json()).error);
-    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-    let pending = "", complete = false;
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      const lines = (pending + chunk.value).split("\n");
-      pending = lines.pop();
-      for (const line of lines) {
-        if (!line) continue;
-        const event = JSON.parse(line);
-        if (event.error) throw new Error(event.error);
-        if (event.delta) {
-          const box = thread.value;
-          const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-          messages.value[start + 1].text += event.delta;
-          if (follow) { await nextTick(); box.scrollTop = box.scrollHeight; }
-        }
-        if (event.done) { session = event.session; complete = true; }
-      }
+    const response = await fetch("/history" + query, {signal:controller.signal,cache:"no-store"});
+    if (!response.ok) throw new Error(response.status === 401 ? "请刷新页面后重新登录" : "暂时无法读取记录，正在重试");
+    const {turns:page} = await response.json();
+    error.value = "";
+    if (!first || back) older.value = page.length === 40;
+    const oldHeight = box.scrollHeight;
+    const follow = !back && (!first || box.scrollHeight - box.clientHeight - box.scrollTop < 80);
+    if (back) turns.value.unshift(...page);
+    else for (const row of page) {
+      const index = turns.value.findIndex(item => item.id === row.id);
+      if (index === -1) turns.value.push(row);
+      else turns.value[index] = row;
     }
-    if (!complete) throw new Error("回复中断，请重试");
-    status.value = "";
-  } catch (error) {
-    messages.value.splice(start);
-    draft.value = text;
-    status.value = error.message || "发送失败，请重试";
+    if (page.length || loading.value) {
+      loading.value = false;
+      await nextTick();
+      if (back) box.scrollTop += box.scrollHeight - oldHeight;
+      else if (follow) box.scrollTop = box.scrollHeight;
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") error.value = e.message || "无法读取记录";
   } finally {
-    busy.value = false;
-    await nextTick();
-    input.value.focus();
+    loading.value = false;
+    fetching = false;
   }
 }
+onMounted(() => {
+  refresh();
+  timer = setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+  document.addEventListener("visibilitychange", visible);
+});
+function visible() { if (!document.hidden) refresh(); }
+onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEventListener("visibilitychange", visible);});
 </script>
 <template>
-  <header><div class="brand"><i aria-hidden="true">P</i> Piggy</div>
-    <button type="button" :disabled="busy" @click="reset">＋ 新对话</button></header>
-  <main><section id="thread" ref="thread" aria-label="对话记录" tabindex="0">
-    <div v-if="!messages.length" id="empty"><span class="mark" aria-hidden="true">P</span><h1>今天想聊什么？</h1></div>
-    <div id="messages"><p v-for="(m, i) in messages" :key="i" class="message" :class="m.role"><strong>{{ m.role === "user" ? "你" : "Piggy" }}</strong>{{ m.text }}</p></div>
-  </section>
-  <form @submit.prevent="send"><label for="message">给 Piggy 发消息</label>
-    <div class="composer"><textarea id="message" ref="input" v-model="draft" :readonly="busy" rows="2" maxlength="8000" placeholder="输入消息…" required @keydown.enter="enter"></textarea><button type="submit" :disabled="busy || !draft.trim()">发送 ↑</button></div>
-    <div id="status" role="status">{{ status }}</div>
-  </form></main>
+  <header><div class="brand"><i aria-hidden="true">P</i> Piggy</div><span>手机对话记录</span></header>
+  <main><p v-if="error" role="status">{{ error }}</p>
+    <section id="thread" ref="thread" aria-label="手机对话记录" tabindex="0">
+      <div v-if="!turns.length && !error" id="empty"><span class="mark" aria-hidden="true">P</span>
+        <h1>{{ loading ? "正在读取记录…" : "还没有手机消息" }}</h1></div>
+      <button v-if="older" type="button" class="older" @click="refresh(true)">查看更早记录</button>
+      <article v-for="row in turns" :key="row.id">
+        <time :datetime="new Date(row.created).toISOString()">{{ format.format(row.created) }}</time>
+        <p class="message user"><strong>你</strong>{{ row.question }}</p>
+        <p v-if="row.answer" class="message assistant"><strong>Piggy</strong>{{ row.answer }}</p>
+        <p v-if="row.status !== 'complete'" class="state">{{ row.status === 'pending' ? '正在回复…' : '回复未完成' }}</p>
+      </article>
+    </section>
+  </main>
 </template>
 <style>
-#app { height: 100%; display: flex; flex-direction: column; }
-#app main { margin: 0 auto; }
-header button, .composer button { min-height: 44px; }
+#app { height:100%; display:flex; flex-direction:column }
+#app main { margin:0 auto }
+header span,time,.state {color:#526457;font-size:.875rem}
+article {display:flex;flex-direction:column;gap:12px;padding:14px 0 22px}
+time {align-self:center}
+.older {align-self:center;min-height:44px;padding:0 16px;border-radius:22px;background:white;border:1px solid #adbbaa;color:inherit}
+.state {margin:0}
 </style>

@@ -8,6 +8,10 @@ DynamicUser=yes
 WorkingDirectory=/lighten012/projects/Piggy/current
 EnvironmentFile=/lighten012/projects/Piggy/server.env
 UnsetEnvironment=PIGGY_ADMIN_PASSWORD
+StateDirectory=piggy-journal
+StateDirectoryMode=0700
+UMask=0077
+Environment=PIGGY_DB=/var/lib/piggy-journal/chat.sqlite
 Environment=HOST=127.0.0.1 PORT=18889 NODE_ENV=production
 ExecStart=/lighten012/projects/Piggy/runtime/node --max-old-space-size=96 pi.mjs
 Restart=on-failure

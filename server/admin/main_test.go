@@ -9,7 +9,7 @@ import (
 
 func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat" || r.Header.Get("Authorization") != "Bearer internal" {
+		if (r.URL.Path != "/chat" && r.URL.Path != "/history") || r.Header.Get("Authorization") != "Bearer internal" {
 			t.Error("unexpected upstream request")
 		}
 		w.Header().Set("X-Test-Owner", r.Header.Get("X-Piggy-Owner"))
@@ -25,7 +25,7 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 	}{
 		{"POST", mobileChat, false, 200, "mobile"}, {"GET", mobileChat, false, 405, ""},
 		{"GET", "/", false, 401, ""}, {"GET", "/assets/app.js", false, 401, ""}, {"POST", "/chat", false, 401, ""},
-		{"GET", "/", true, 200, ""}, {"POST", "/chat", true, 200, "admin"},
+		{"GET", "/", true, 200, ""}, {"POST", "/chat", true, 405, ""}, {"GET", "/history", false, 401, ""}, {"GET", "/history?after=1", true, 200, "admin"},
 	} {
 		r := httptest.NewRequest(c.method, c.path, nil)
 		r.Header.Set("X-Piggy-Owner", "admin")
