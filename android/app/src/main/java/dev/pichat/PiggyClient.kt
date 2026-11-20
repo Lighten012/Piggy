@@ -24,48 +24,67 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         prefs.edit().putString("session", it).commit()
     }
     val recent: JSONArray get() = JSONArray(prefs.getString("recent", "[]"))
-    val draft: String get() = prefs.getString("pendingText", "").orEmpty()
+    val draft: String get() = prefs.getString("pendingDraft", prefs.getString("pendingText", "")).orEmpty()
 
-    val attachment: JSONObject? get() = prefs.getString("file", null)?.let { JSONObject(it) }
+    companion object {
+        const val MAX_FILES = 4
+        private fun objects(array: JSONArray) = List(array.length()) { array.getJSONObject(it) }
+        fun turnFiles(turn: JSONObject): List<JSONObject> =
+            turn.optJSONArray("files")?.let(::objects) ?: listOfNotNull(turn.optJSONObject("file"))
+    }
 
-    fun fileLabel(file: JSONObject): String {
+    val attachments: List<JSONObject> get() = prefs.getString("files", null)?.let { objects(JSONArray(it)) }
+        ?: listOfNotNull(prefs.getString("file", null)?.let(::JSONObject))
+
+    fun sizeLabel(file: JSONObject): String {
         val size = file.optLong("size", -1)
-        return file.getString("name") + if (size >= 0) " · " + Formatter.formatFileSize(activity, size) else ""
+        return if (size >= 0) Formatter.formatFileSize(activity, size) else ""
     }
 
-    fun chooseFile(uri: Uri) {
+    fun chooseFiles(uris: List<Uri>) {
+        val current = attachments
+        val added = uris.distinct().filter { uri -> current.none { it.getString("uri") == uri.toString() } }
+        if (added.isEmpty()) return
+        require(current.size + added.size <= MAX_FILES) { "每条消息最多可添加 4 个附件" }
         val resolver = activity.contentResolver
-        var name = uri.lastPathSegment?.substringAfterLast('/') ?: "附件"
-        var size = -1L
-        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
-            if (it.moveToFirst()) {
-                if (!it.isNull(0)) name = it.getString(0)
-                if (!it.isNull(1)) size = it.getLong(1)
+        val files = added.map { uri ->
+            var name = uri.lastPathSegment?.substringAfterLast('/') ?: "附件"
+            var size = -1L
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
+                if (it.moveToFirst()) {
+                    if (!it.isNull(0)) name = it.getString(0)
+                    if (!it.isNull(1)) size = it.getLong(1)
+                }
             }
+            require(size <= 10L * 1024 * 1024) { "每个附件最多 10 MB" }
+            JSONObject().put("id", UUID.randomUUID().toString()).put("uri",uri.toString())
+                .put("name",name).put("size",size).put("mime",resolver.getType(uri) ?: "application/octet-stream")
         }
-        require(size <= 10L * 1024 * 1024) { "每个附件最多 10 MB" }
-        val mime = resolver.getType(uri) ?: "application/octet-stream"
-        resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        val previous = attachment
-        val file = JSONObject().put("id", UUID.randomUUID().toString()).put("uri",uri.toString())
-            .put("name",name).put("size",size).put("mime",mime)
-        check(prefs.edit().putString("file", file.toString()).remove("pendingId").commit())
-        if (previous?.optString("uri") != uri.toString()) releaseFile(previous)
+        try {
+            added.forEach { resolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            persistSelection(current + files)
+        } catch (e: Exception) {
+            files.forEach(::releaseFile)
+            throw e
+        }
     }
 
-    private fun releaseFile(file: JSONObject?) {
-        val uri = file?.optString("uri") ?: return
-        if (attachment?.optString("uri") == uri) return
+    private fun persistSelection(files: List<JSONObject>) {
+        check(prefs.edit().putString("files", JSONArray(files).toString()).remove("file").remove("pendingId").commit())
+    }
+
+    private fun releaseFile(file: JSONObject) {
+        val uri = file.getString("uri")
+        if (attachments.any { it.getString("uri") == uri }) return
         val history = recent
-        if ((0 until history.length()).any { history.getJSONObject(it).optJSONObject("file")?.optString("uri") == uri }) return
+        if ((0 until history.length()).any { i -> turnFiles(history.getJSONObject(i)).any { it.optString("uri") == uri } }) return
         runCatching { activity.contentResolver.releasePersistableUriPermission(
             Uri.parse(uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 
-    fun removeFile() {
-        val previous = attachment
-        prefs.edit().remove("file").remove("pendingId").commit()
-        releaseFile(previous)
+    fun removeFile(file: JSONObject) {
+        persistSelection(attachments.filterNot { it.getString("id") == file.getString("id") })
+        releaseFile(file)
     }
 
     private fun ui(action: () -> Unit) = activity.runOnUiThread { if (!closed) action() }
@@ -114,20 +133,24 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             val result = JSONObject(http.inputStream.bufferedReader().use { it.readText() })
             check(result.getString("id") == file.getString("id")) { "附件确认失败" }
             file.put("uploaded",true).put("size",result.getLong("size"))
-            check(prefs.edit().putString("file",file.toString()).commit())
+
         }
     }
 
-    fun send(text: String, uploaded: () -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
+    fun send(text: String, draftText: String, uploaded: () -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
         val failure = runCatching {
             val previousId = prefs.getString("pendingId", null)
-            val id = if (draft == text && previousId != null) previousId else UUID.randomUUID().toString()
-            check(prefs.edit().putString("pendingText", text).putString("pendingId", id).commit()) { "无法保存待发送消息" }
-            val file = attachment
-            if (file != null && !file.optBoolean("uploaded")) upload(file)
+            val id = if (prefs.getString("pendingText", null) == text && previousId != null) previousId else UUID.randomUUID().toString()
+            check(prefs.edit().putString("pendingText", text).putString("pendingDraft",draftText).putString("pendingId", id).commit()) { "无法保存待发送消息" }
+            val files = attachments
+            for (file in files) {
+                if (file.optBoolean("uploaded")) continue
+                upload(file)
+                check(prefs.edit().putString("files",JSONArray(files).toString()).remove("file").commit())
+            }
             ui(uploaded)
             val data = JSONObject().put("text",text).put("session",session).put("request",id)
-            if (file != null) data.put("attachment",file.getString("id"))
+            if (files.isNotEmpty()) data.put("attachments",JSONArray(files.map { it.getString("id") }))
             post(endpoint, { http ->
                 http.setRequestProperty("Content-Type","application/json")
                 http.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
@@ -153,19 +176,19 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                 }
                 if (!done) throw IOException("回复中断，请重试")
                 val saved = recent
-                val turn = JSONObject().put("text", text).put("answer", answer.toString())
-                if (file != null) {
-                    turn.put("filename",fileLabel(file))
-                    ImagePreviews.save(activity, file)
-                    turn.put("file", file)
+                val turn = JSONObject().put("text", draftText).put("answer", answer.toString())
+                if (files.isNotEmpty()) {
+                    files.forEach { ImagePreviews.save(activity, it) }
+                    turn.put("files", JSONArray(files))
                 }
                 saved.put(turn)
                 val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
                 check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
-                    .remove("pendingId").remove("file").commit()) { "无法保存回复，请重试" }
-                val oldFile = evicted?.optJSONObject("file")
-                ImagePreviews.discard(activity, oldFile?.optString("id"))
-                releaseFile(oldFile)
+                    .remove("pendingId").remove("pendingDraft").remove("file").remove("files").commit()) { "无法保存回复，请重试" }
+                if (evicted != null) for (file in turnFiles(evicted)) {
+                    ImagePreviews.discard(activity, file.getString("id"))
+                    releaseFile(file)
+                }
             }
         }.exceptionOrNull()
         ui { finished(failure?.localizedMessage) }

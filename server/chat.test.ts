@@ -80,7 +80,7 @@ test("records accepted mobile turns and restores context after restart", async t
   const list = await (await fetch(worker.base+"/history",{headers:admin})).json();
   assert.deepEqual(list.turns.map(r=>[r.question,r.answer,r.status]),[
     ["one","OK","complete"],["failed","","failed"],["two","OK","complete"],["separate","OK","complete"]]);
-  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","filesize","id","question","status"]);
+  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","files","filesize","id","question","status"]);
   assert.equal((await (await fetch(worker.base+"/history?after=2",{headers:admin})).json()).turns.length,2);
 });
 
@@ -110,15 +110,31 @@ test("attachment references are scoped to a conversation and only successful tur
   const file = {id:randomUUID(),name:"样本.txt",size:12,image:0,remote:"file-test",expires:Date.now()+60000};
   db.saveAttachment("phone-a",file);
   assert.equal(db.attachment("phone-b",file.id),undefined);
-  const turn = db.begin("phone-a","first","read",file.id);
-  assert.equal(db.latestAttachment("phone-a"),undefined);
+  const turn = db.begin("phone-a","first","read",[file.id]);
+  assert.equal(db.latestFiles("phone-a")[0],undefined);
   db.complete(turn,"OK",[]);
   const other = {...file,id:randomUUID(),name:"unknown.ext"};
   db.saveAttachment("phone-a",other);
-  db.fail(db.begin("phone-a","failed","read",other.id),"");
-  assert.equal(db.latestAttachment("phone-a")?.id,file.id);
-  assert.equal(db.latestAttachment("phone-b"),undefined);
+  db.fail(db.begin("phone-a","failed","read",[other.id]),"");
+  assert.equal(db.latestFiles("phone-a")[0]?.id,file.id);
+  assert.equal(db.latestFiles("phone-b")[0],undefined);
   assert.equal(db.page(null,null)[0].filename,file.name);
   assert.equal(db.page(null,null)[0].filesize,12);
   assert.equal(db.lookup("phone-a","first")?.attachment,file.id);
+});
+
+test("multi-file turns preserve all ordered references across restart, retries and pagination", t => {
+  const dir = mkdtempSync(join(tmpdir(),"piggy-multi-"));
+  t.after(() => rmSync(dir,{recursive:true,force:true}));
+  const path = join(dir,"chat.sqlite");
+  let db = new Journal(path);
+  const files = ["photo.png","notes.txt"].map(name => ({id:randomUUID(),name,size:42,image:Number(name.endsWith(".png")),remote:"fixture",expires:Date.now()+60000}));
+  files.forEach(file => db.saveAttachment("phone",file));
+  const turn = db.begin("phone","request","compare",files.map(f=>f.id));
+  db.complete(turn,"ok",[]);
+  db = new Journal(path);
+  assert.deepEqual(db.latestFiles("phone").map(f=>f.name),["photo.png","notes.txt"]);
+  assert.deepEqual(db.turnFiles(Number(db.lookup("phone","request")?.id)).map(f=>f.id),files.map(f=>f.id));
+  assert.deepEqual(db.page(null,null)[0].files,files.map(({name,size})=>({name,size})));
+  assert.deepEqual(db.latestFiles("second phone"),[]);
 });

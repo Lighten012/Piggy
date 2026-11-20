@@ -61,6 +61,7 @@ export async function receiveAttachment(req: IncomingMessage, res: ServerRespons
   } catch {
     if (!res.headersSent && !res.destroyed) reply(502,{error:"附件上传失败，请重试"});
   } finally {
-    try { if (dir) await rm(dir,{recursive:true,force:true}); } finally { uploading=false; }
+    uploading = false;
+    if (dir) await rm(dir,{recursive:true,force:true});
   }
 }

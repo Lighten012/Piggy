@@ -33,9 +33,8 @@ class ChatActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var attach: TextView
     private lateinit var fileRow: LinearLayout
-    private lateinit var draftImage: ImageView
-    private lateinit var fileName: TextView
-    private lateinit var remove: TextView
+    private lateinit var fileStrip: HorizontalScrollView
+    private lateinit var sendError: TextView
     private lateinit var send: ImageButton
     private lateinit var gate: LinearLayout
     private lateinit var gateTitle: TextView
@@ -109,31 +108,25 @@ class ChatActivity : Activity() {
         transcript.addView(empty, LinearLayout.LayoutParams(match, 0, 1f))
         scroll.addView(transcript)
         chat.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
-        val composer = LinearLayout(this).apply {
-            gravity = Gravity.BOTTOM
-            background = shape(Color.WHITE, 30, true)
-            setPadding(dp(15), dp(6), dp(6), dp(6))
+        val composerCard = column().apply {
+            background = shape(Color.WHITE, 26, true)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             elevation = dp(2).toFloat()
         }
-        fileRow = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            background = shape(Color.WHITE, 20, true)
-            setPadding(dp(14), 0, dp(4), 0)
+        fileRow = LinearLayout(this)
+        fileStrip = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setPadding(dp(5), dp(4), dp(5), dp(8))
+            addView(fileRow)
         }
-        draftImage = previewView()
-        fileRow.addView(draftImage, LinearLayout.LayoutParams(dp(56), dp(56)).apply {
-            setMargins(0, dp(4), dp(10), dp(4))
-        })
-        fileName = text("", 14f, plum).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
-        fileRow.addView(fileName, LinearLayout.LayoutParams(0, wrap, 1f))
-        remove = text("×", 24f, muted).apply {
-            contentDescription = "移除附件"
-            gravity = Gravity.CENTER
-            isFocusable = true
-            setOnClickListener { client.removeFile(); showFile() }
+        composerCard.addView(fileStrip, match, wrap)
+        sendError = text("", 14f, plum).apply {
+            visibility = View.GONE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            setPadding(dp(10), dp(4), dp(10), dp(4))
         }
-        fileRow.addView(remove, dp(48), dp(48))
-        chat.addView(fileRow, match, wrap)
+        composerCard.addView(sendError, match, wrap)
+        val composer = LinearLayout(this).apply { gravity = Gravity.BOTTOM }
         attach = text("＋", 24f, plum).apply {
             contentDescription = "添加附件"
             gravity = Gravity.CENTER
@@ -142,6 +135,7 @@ class ChatActivity : Activity() {
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "*/*"
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                 }, 302)
             }
@@ -169,7 +163,8 @@ class ChatActivity : Activity() {
             setOnClickListener { submit() }
         }
         composer.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(8) })
-        chat.addView(composer, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+        composerCard.addView(composer, match, wrap)
+        chat.addView(composerCard, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
         root.addView(chat, LinearLayout.LayoutParams(match, 0, 1f))
         chat.visibility = View.GONE
 
@@ -201,7 +196,7 @@ class ChatActivity : Activity() {
         val recent = client.recent
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
-            bubble(turn.getString("text"), true, turn.optJSONObject("file"), turn.optString("filename"))
+            bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
             bubble(turn.getString("answer"), false)
         }
         input.setText(client.draft)
@@ -210,13 +205,61 @@ class ChatActivity : Activity() {
     }
 
     private fun showFile() {
-        val file = client.attachment
-        fileRow.visibility = if (file == null) View.GONE else View.VISIBLE
-        fileName.text = file?.let { client.fileLabel(it) } ?: ""
-        ImagePreviews.display(draftImage, file?.let { ImagePreviews.source(it) }, file?.optString("name").orEmpty())
-        fileRow.setOnClickListener { if (file != null) openFile(file) }
-        fileRow.contentDescription = file?.let { "打开附件，" + it.getString("name") }
-        fileRow.isFocusable = file != null
+        val files = if (generating) emptyList() else client.attachments
+        fileRow.removeAllViews()
+        fileStrip.visibility = if (files.isEmpty()) View.GONE else View.VISIBLE
+        for (file in files) {
+            val image = ImagePreviews.source(file)
+            val tile = FrameLayout(this)
+            if (image != null) {
+                tile.addView(photoTile(file, image), dp(88), dp(76))
+            } else {
+                tile.addView(documentTile(file, true), dp(188), dp(76))
+            }
+            val remove = text("×", 18f, Color.WHITE).apply {
+                gravity = Gravity.CENTER
+                background = shape(Color.argb(220, 63, 44, 51), 20)
+            }
+            val action = FrameLayout(this).apply {
+                contentDescription = "移除附件，" + file.getString("name")
+                isFocusable = true
+                addView(remove, FrameLayout.LayoutParams(dp(24),dp(24),Gravity.TOP or Gravity.END).apply {
+                    topMargin = dp(4); rightMargin = dp(4)
+                })
+                setOnClickListener { client.removeFile(file); showFile() }
+            }
+            tile.addView(action, FrameLayout.LayoutParams(dp(48),dp(48),Gravity.TOP or Gravity.END))
+            fileRow.addView(tile, LinearLayout.LayoutParams(wrap,wrap).apply { rightMargin = dp(6) })
+        }
+    }
+
+    private fun photoTile(file: JSONObject, image: Uri) = previewView().apply {
+        isFocusable = true
+        scaleType = ImageView.ScaleType.CENTER_CROP
+        setOnClickListener { openFile(file) }
+        ImagePreviews.display(this, image, file.getString("name"))
+    }
+
+    private fun documentTile(file: JSONObject, draft: Boolean) = LinearLayout(this).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        background = shape(if (draft) paper else Color.WHITE, 14, true)
+        setPadding(dp(10), dp(6), dp(if (draft) 30 else 10), dp(6))
+        contentDescription = "打开附件，" + file.getString("name")
+        isFocusable = true
+        setOnClickListener { openFile(file) }
+        addView(ImageView(this@ChatActivity).apply {
+            setImageResource(R.drawable.attachment_document)
+            background = shape(Color.rgb(245, 231, 233), 10)
+            setPadding(dp(7),dp(7),dp(7),dp(7))
+        }, dp(36), dp(42))
+        val labels = column()
+        labels.addView(text(file.getString("name"), 15f).apply {
+            maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        labels.addView(text(client.sizeLabel(file), 12f, muted).apply { setPadding(0,dp(3),0,0) })
+        addView(labels, LinearLayout.LayoutParams(0,wrap,1f).apply { leftMargin = dp(9) })
+        if (!draft) addView(text("↗",18f,plum))
     }
 
     private fun openFile(file: JSONObject) {
@@ -304,56 +347,68 @@ class ChatActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 302 && resultCode == RESULT_OK) {
-            data?.data?.let { uri ->
-                runCatching { client.chooseFile(uri); showFile() }.onFailure {
-                    Toast.makeText(this,it.localizedMessage ?: "无法读取文件",Toast.LENGTH_LONG).show()
-                }
+            val clip = data?.clipData
+            val uris = if (clip != null) (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                else listOfNotNull(data?.data)
+            runCatching { client.chooseFiles(uris); showFile() }.onFailure {
+                Toast.makeText(this,it.localizedMessage ?: "无法读取文件",Toast.LENGTH_LONG).show()
             }
         }
         if (requestCode == AppUpdater.PERMISSION_REQUEST && android.os.Build.VERSION.SDK_INT >= 26 &&
             packageManager.canRequestPackageInstalls()) updater.install()
     }
 
-    private fun bubble(value: String, user: Boolean, file: JSONObject? = null, legacyLabel: String = ""): TextView {
+    private fun bubble(value: String, user: Boolean, files: List<JSONObject> = emptyList(), legacyLabel: String = ""): TextView {
         empty.visibility = View.GONE
         val row = column().apply { gravity = if (user) Gravity.END else Gravity.START }
         val role = text(if (user) "你" else "Piggy", 13f, muted)
         role.setPadding(dp(9), 0, dp(9), dp(5))
         row.addView(role, wrap, wrap)
-        val fileLabel = file?.let { client.fileLabel(it) } ?: legacyLabel
-        if (fileLabel.isNotEmpty()) {
-            row.addView(text(fileLabel, 14f, muted).apply {
-                setPadding(dp(9), 0, dp(9), dp(4))
-                if (file != null) {
-                    minHeight = dp(48)
-                    gravity = Gravity.CENTER_VERTICAL
-                    paint.isUnderlineText = true
-                    isFocusable = true
-                    contentDescription = "打开附件，" + file.getString("name")
-                    setOnClickListener { openFile(file) }
+        if (files.isEmpty() && legacyLabel.isNotEmpty())
+            row.addView(text(legacyLabel, 14f, muted), wrap, wrap)
+        val group = if (files.isEmpty()) row else column().apply {
+            val width = minOf(dp(276), (resources.displayMetrics.widthPixels * .76f).toInt())
+            background = shape(Color.rgb(247, 238, 239), 20, true)
+            setPadding(dp(5),dp(5),dp(5),dp(5))
+            row.addView(this,width,wrap)
+            var index = 0
+            while (index < files.size) {
+                val file = files[index++]
+                val image = ImagePreviews.source(file)
+                val item: View
+                val height: Int
+                if (image != null) {
+                    val photos = LinearLayout(this@ChatActivity)
+                    fun addPhoto(f: JSONObject, uri: Uri, gap: Int) {
+                        val local = ImagePreviews.saved(this@ChatActivity, f.getString("id")) ?: uri
+                        photos.addView(photoTile(f,local),LinearLayout.LayoutParams(0,match,1f).apply { leftMargin = dp(gap) })
+                    }
+                    addPhoto(file,image,0)
+                    val next = files.getOrNull(index)
+                    val nextImage = next?.let { ImagePreviews.source(it) }
+                    if (next != null && nextImage != null) {
+                        addPhoto(next,nextImage,4)
+                        index++
+                    }
+                    item = photos
+                    height = dp(if (photos.childCount == 2) 126 else 172)
+                } else {
+                    item = documentTile(file,false)
+                    height = dp(66)
                 }
-            }, wrap, wrap)
-        }
-        val image = file?.let { ImagePreviews.saved(this, it.optString("id")) ?: ImagePreviews.source(it) }
-        if (file != null && image != null) {
-            val preview = previewView().apply {
-                maxHeight = dp(190)
-                isFocusable = true
-                setOnClickListener { openFile(file) }
+                addView(item, LinearLayout.LayoutParams(match,height).apply { topMargin = if (childCount == 0) 0 else dp(4) })
             }
-            row.addView(preview, LinearLayout.LayoutParams(dp(200), wrap).apply { bottomMargin = dp(4) })
-            ImagePreviews.display(preview, image, fileLabel)
         }
-        val view = text("", 17f, if (user) Color.WHITE else ink).apply {
+        val view = text("", 17f, if (user && files.isEmpty()) Color.WHITE else ink).apply {
             setTextIsSelectable(true)
-            setLinkTextColor(if (user) Color.WHITE else plum)
+            setLinkTextColor(if (user && files.isEmpty()) Color.WHITE else plum)
             setPadding(dp(17), dp(13), dp(17), dp(13))
             setLineSpacing(dp(2).toFloat(), 1f)
-            background = shape(if (user) plum else Color.WHITE, 22, !user)
+            if (files.isEmpty()) background = shape(if (user) plum else Color.WHITE, 22, !user)
             maxWidth = (resources.displayMetrics.widthPixels * .81f).toInt()
         }
         if (value.isNotEmpty()) markdown.setMarkdown(view, value)
-        row.addView(view, wrap, wrap)
+        if (files.isEmpty() || value.isNotEmpty()) group.addView(view, if (files.isEmpty()) wrap else match, wrap)
         transcript.addView(row, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(15) })
         return view
     }
@@ -362,22 +417,26 @@ class ChatActivity : Activity() {
     private fun controls() {
         val enabled = versionCurrent && !generating
         attach.isEnabled = enabled
-        remove.isEnabled = enabled
         send.isEnabled = enabled
         send.alpha = if (enabled) 1f else .55f
         input.isEnabled = enabled
     }
     private fun submit() {
         val draft = input.text.toString().trim()
-        val file = client.attachment
-        val message = draft.ifEmpty { if (file != null) "请帮我看看这个文件。" else "" }
+        val files = client.attachments
+        val message = draft.ifEmpty {
+            when (files.size) { 0 -> ""; 1 -> "请帮我看看这个文件。"; else -> "请帮我看看这些文件。" }
+        }
         if (message.isEmpty() || !send.isEnabled) return
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         generating = true
         controls()
+        sendError.visibility = View.GONE
         input.setText("")
-        bubble(message, true, file)
-        val reply = bubble("", false).apply { hint = if (file == null) "正在回复…" else "正在发送附件…" }
+        showFile()
+        val firstPendingRow = transcript.childCount
+        bubble(draft, true, files)
+        val reply = bubble("", false).apply { hint = if (files.isEmpty()) "正在回复…" else "正在发送附件…" }
         toBottom()
         val source = StringBuilder()
         var scheduled = false
@@ -387,7 +446,7 @@ class ChatActivity : Activity() {
             markdown.setMarkdown(reply, source.toString())
             if (follow) toBottom()
         }
-        client.send(message, uploaded = { reply.hint = "正在回复…" }, delta = { part ->
+        client.send(message, draft, uploaded = { reply.hint = "正在回复…" }, delta = { part ->
             reply.hint = ""
             source.append(part)
             if (!scheduled) {
@@ -399,12 +458,15 @@ class ChatActivity : Activity() {
             if (error == null) {
                 render.run()
             } else {
-                reply.text = error
-                input.setText(message)
+                transcript.removeViews(firstPendingRow, transcript.childCount - firstPendingRow)
+                if (firstPendingRow == 1) empty.visibility = View.VISIBLE
+                sendError.text = error
+                sendError.visibility = View.VISIBLE
+                input.setText(draft)
                 input.setSelection(input.length())
             }
-            showFile()
             generating = false
+            showFile()
             controls()
         })
     }

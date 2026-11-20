@@ -28,6 +28,14 @@ export class Journal {
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='attachment'").get()) {
       this.db.exec("ALTER TABLE turns ADD COLUMN attachment TEXT");
     }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS turn_files (
+        turn_id INTEGER NOT NULL, position INTEGER NOT NULL, attachment TEXT NOT NULL,
+        PRIMARY KEY(turn_id,position), UNIQUE(turn_id,attachment)
+      );
+      CREATE INDEX IF NOT EXISTS turn_files_attachment ON turn_files(attachment);
+      INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
+    `);
   }
 
   attachment(conversation: string, id: string) {
@@ -38,11 +46,17 @@ export class Journal {
     this.db.prepare("INSERT INTO attachments(conversation,id,name,size,image,remote,expires) VALUES(?,?,?,?,?,?,?)")
       .run(conversation,file.id,file.name,file.size,file.image,file.remote,file.expires);
     this.db.prepare(`DELETE FROM attachments WHERE expires < ? AND NOT EXISTS
-      (SELECT 1 FROM turns WHERE turns.conversation=attachments.conversation AND turns.attachment=attachments.id)`).run(Date.now());
+      (SELECT 1 FROM turn_files f JOIN turns t ON t.id=f.turn_id WHERE t.conversation=attachments.conversation AND f.attachment=attachments.id)`).run(Date.now());
   }
-  latestAttachment(conversation: string) {
-    return this.db.prepare(`SELECT a.* FROM turns t JOIN attachments a ON a.id=t.attachment AND a.conversation=t.conversation
-      WHERE t.conversation=? AND t.status='complete' ORDER BY t.id DESC LIMIT 1`).get(conversation) as Attachment | undefined;
+  turnFiles(turn: number | bigint) {
+    return this.db.prepare(`SELECT a.* FROM turn_files f JOIN turns t ON t.id=f.turn_id
+      JOIN attachments a ON a.conversation=t.conversation AND a.id=f.attachment
+      WHERE f.turn_id=? ORDER BY f.position`).all(turn) as unknown as Attachment[];
+  }
+  latestFiles(conversation: string) {
+    const turn = this.db.prepare(`SELECT id FROM turns WHERE conversation=? AND status='complete'
+      AND attachment IS NOT NULL ORDER BY id DESC LIMIT 1`).get(conversation);
+    return turn ? this.turnFiles(Number(turn.id)) : [];
   }
 
   previous(conversation: string): AgentMessage[] {
@@ -50,11 +64,21 @@ export class Journal {
       .all(conversation).reverse().flatMap(row => JSON.parse(String(row.context)));
   }
   lookup(conversation: string, request: string) {
-    return this.db.prepare("SELECT question,answer,status,attachment FROM turns WHERE conversation=? AND request=?").get(conversation,request);
+    return this.db.prepare("SELECT id,question,answer,status,attachment FROM turns WHERE conversation=? AND request=?").get(conversation,request);
   }
-  begin(conversation: string, request: string, question: string, attachment: string | null = null) {
-    return this.db.prepare("INSERT INTO turns(conversation,request,created,question,attachment,status) VALUES(?,?,?,?,?,'pending')")
-      .run(conversation,request,Date.now(),question,attachment).lastInsertRowid;
+  begin(conversation: string, request: string, question: string, files: string[] = []) {
+    this.db.exec("BEGIN");
+    try {
+      const turn = this.db.prepare("INSERT INTO turns(conversation,request,created,question,attachment,status) VALUES(?,?,?,?,?,'pending')")
+        .run(conversation,request,Date.now(),question,files[0] ?? null).lastInsertRowid;
+      const insert = this.db.prepare("INSERT INTO turn_files(turn_id,position,attachment) VALUES(?,?,?)");
+      files.forEach((file,index) => insert.run(turn,index,file));
+      this.db.exec("COMMIT");
+      return turn;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
   complete(id: number | bigint, answer: string, pair: AgentMessage[]) {
     this.db.prepare("UPDATE turns SET answer=?,context=?,status='complete' WHERE id=?").run(answer,JSON.stringify(pair),id);
@@ -64,11 +88,14 @@ export class Journal {
   }
 
   page(after: number | null, before: number | null) {
-    const columns = "SELECT t.id,created,question,answer,status,a.name AS filename,a.size AS filesize FROM turns t LEFT JOIN attachments a ON a.conversation=t.conversation AND a.id=t.attachment";
-    if (after !== null) {
-      return this.db.prepare(columns + " WHERE t.id>? ORDER BY t.id LIMIT 40").all(after);
-    }
-    return this.db.prepare(columns + " WHERE t.id<? ORDER BY t.id DESC LIMIT 40")
-      .all(before ?? Number.MAX_SAFE_INTEGER).reverse();
+    const columns = `SELECT t.id,created,question,answer,status,a.name AS filename,a.size AS filesize,
+      (SELECT json_group_array(json_object('name',b.name,'size',b.size) ORDER BY f.position)
+       FROM turn_files f JOIN attachments b ON b.conversation=t.conversation AND b.id=f.attachment
+       WHERE f.turn_id=t.id) AS files FROM turns t LEFT JOIN attachments a
+      ON a.conversation=t.conversation AND a.id=t.attachment`;
+    const rows = after !== null
+      ? this.db.prepare(columns + " WHERE t.id>? ORDER BY t.id LIMIT 40").all(after)
+      : this.db.prepare(columns + " WHERE t.id<? ORDER BY t.id DESC LIMIT 40").all(before ?? Number.MAX_SAFE_INTEGER).reverse();
+    return rows.map(row => ({...row, files:JSON.parse(String(row.files))}));
   }
 }

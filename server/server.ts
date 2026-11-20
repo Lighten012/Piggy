@@ -53,18 +53,18 @@ const model: Model<"openai-completions"> = {
 const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
 const thinkingLevel = model.id === sol.id ? "high" : "off";
 const responsesModel: Model<"openai-responses"> = { ...model, api:"openai-responses", compat:undefined };
-function newAgent(file?: Attachment) {
+function newAgent(files: Attachment[]) {
   return new Agent({
-    initialState: { systemPrompt: "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。", model: file ? responsesModel : model, thinkingLevel },
+    initialState: { systemPrompt: "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。", model: files.length ? responsesModel : model, thinkingLevel },
     getApiKey: () => apiKey,
     streamFn: (_model, context, options) => {
       const settings = { ...options, maxTokens: thinkingLevel === "high" ? 16384 : 2048, maxRetries: 0 };
-      if (!file) return streamSimple(model, context, settings);
+      if (!files.length) return streamSimple(model, context, settings);
       return streamResponses(responsesModel, context, { ...settings, onPayload(payload) {
         const body = payload as { input: {role?: string; content: unknown[]}[] };
         const user = body.input.findLast(item => item.role === "user");
         if (!user || !Array.isArray(user.content)) throw new Error("Missing attachment message");
-        user.content.push(file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} :
+        for (const file of files) user.content.push(file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} :
           {type:"input_file",file_id:file.remote});
       }});
     },
@@ -90,9 +90,12 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   let data;
   try { data = JSON.parse(Buffer.concat(chunks).toString()); }
   catch { return reject(res, 400, "请求格式有误"); }
+  const ids: unknown = data?.attachments ?? (data?.attachment == null ? [] : [data.attachment]);
+  if (!Array.isArray(ids) || ids.length > 4 || new Set(ids).size !== ids.length ||
+      ids.some(id => typeof id !== "string" || !uuid.test(id)) || (ids.length && !data.session) ||
+      (data?.attachments != null && data?.attachment != null)) return reject(res,400,"每条消息最多可带四个不同的附件");
   if (typeof data?.text !== "string" || !data.text.trim() || data.text.length > 8000 ||
       (data.session != null && (typeof data.session !== "string" || !uuid.test(data.session))) ||
-      (data.attachment != null && (typeof data.attachment !== "string" || !uuid.test(data.attachment) || !data.session)) ||
       (data.request != null && (typeof data.request !== "string" || !uuid.test(data.request)))) return reject(res, 400, "消息格式有误");
 
   const conversation = data.session ?? randomUUID();
@@ -100,7 +103,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const question = data.text.trim();
   const existing = journal.lookup(conversation,request);
   if (existing) {
-    if (existing.question !== question || existing.attachment !== (data.attachment ?? null)) return reject(res,409,"消息编号已占用");
+    if (existing.question !== question || JSON.stringify(journal.turnFiles(Number(existing.id)).map(f=>f.id)) !== JSON.stringify(ids)) return reject(res,409,"消息编号已占用");
     if (existing.status === "pending") return reject(res,409,"该消息仍在生成，请稍后重试");
     if (existing.status === "failed") return reject(res,422,"上次生成中断，请重新发送");
     res.writeHead(200, {"Content-Type":"application/x-ndjson; charset=utf-8"});
@@ -109,14 +112,14 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   }
   if (busy) return reject(res,409,"上一条消息仍在生成，请稍后重试");
   if (!fixturePort && memoryUnderPressure()) return reject(res,503,"服务器可用内存不足，请稍后重试");
-  const stored = data.attachment ? journal.attachment(conversation,data.attachment) : journal.latestAttachment(conversation);
-  if (data.attachment && !stored) return reject(res,404,"找不到这段对话的附件，请重新选择");
-  const file = stored && stored.expires > Date.now() ? stored : undefined;
-  if (data.attachment && !file) return reject(res,410,"附件已过期，请重新选择");
-  const agent = newAgent(file);
-  if (stored && !file) agent.state.systemPrompt += " 最近的附件已过期；如果问题需要查看原文，请用户重新上传。";
+  const stored = ids.length ? ids.map(id => journal.attachment(conversation,id)) : journal.latestFiles(conversation);
+  if (stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
+  const files = stored.filter((f): f is Attachment => !!f && f.expires > Date.now());
+  if (ids.length && files.length !== ids.length) return reject(res,410,"附件已过期，请重新选择");
+  const agent = newAgent(files);
+  if (files.length !== stored.length) agent.state.systemPrompt += " 部分附件已过期；如需原文，请用户重新上传。";
   agent.state.messages = journal.previous(conversation);
-  const id = journal.begin(conversation,request,question,data.attachment ?? null);
+  const id = journal.begin(conversation,request,question,ids);
   busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   res.flushHeaders();
@@ -140,7 +143,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     if (res.destroyed || last?.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       const reason = last?.role === "assistant" ? last.errorMessage ?? "" : "";
       const code = reason.match(/\b(400|401|403|404|429|5[0-9]{2})\b/)?.[1];
-      if (file && (code === "400" || code === "404" || code === "415" || code === "422")) {
+      if (files.length && (code === "400" || code === "404" || code === "415" || code === "422")) {
         failure = "OpenAI 无法读取此附件，请重新选择文件或换一种格式";
       }
       console.warn("Model call failed", code || (reason.includes("Connection") ? "connection" : "generation"));
