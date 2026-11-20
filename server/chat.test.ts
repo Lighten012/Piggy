@@ -62,7 +62,7 @@ for (const worker of [false, true]) test(
   assert.ok(id);
   if (worker) {
     const other = await fetch(base + "/chat", {method:"POST",
-      headers:{...headers, "x-piggy-owner":"device-" + "a".repeat(64)},
+      headers:{...headers, "x-piggy-owner":"mobile"},
       body:JSON.stringify({text:"another owner", session:id})});
     assert.equal(other.status,410);
   }

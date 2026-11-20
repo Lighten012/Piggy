@@ -168,7 +168,7 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   if (workerAuth) {
     const value = req.headers["x-piggy-owner"];
     if (!timingSafeEqual(digest(req.headers.authorization || ""), workerAuth) ||
-        typeof value !== "string" || !/^(admin|device-[a-f0-9]{64})$/.test(value)) {
+        (value !== "admin" && value !== "mobile")) {
       return reject(res, 401, "身份无效");
     }
     owner = value;

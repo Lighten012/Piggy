@@ -1,6 +1,5 @@
 package dev.pichat
 
-import android.app.AlertDialog
 import android.app.Activity
 import android.os.Bundle
 import android.graphics.Color
@@ -95,44 +94,6 @@ class ChatActivity : Activity() {
             addView(root)
         })
         client = PiggyClient(this)
-        controls(client.activated)
-        if (!client.activated) activate()
-    }
-
-    private fun activate() {
-        val code = EditText(this).apply {
-            hint = "输入设备邀请码"
-            setSingleLine()
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        val panel = LinearLayout(this).apply {
-            setPadding(dp(24), dp(8), dp(24), 0)
-            addView(code, LinearLayout.LayoutParams(-1, -2))
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("连接 Piggy")
-            .setMessage("首次使用请填写管理员提供的邀请码。对话由 Piggy 服务器处理。")
-            .setView(panel).setPositiveButton("连接", null)
-            .setNegativeButton("退出") { _, _ -> finish() }
-            .setCancelable(false).show()
-        val connect = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-        connect.setOnClickListener {
-            val value = code.text.toString().trim()
-            if (!value.matches(Regex("[a-f0-9]{64}"))) {
-                code.error = "请输入完整的邀请码"
-                return@setOnClickListener
-            }
-            connect.isEnabled = false
-            client.activate(value) { error ->
-                if (error == null) {
-                    dialog.dismiss()
-                    controls(true)
-                } else {
-                    code.error = error
-                    connect.isEnabled = true
-                }
-            }
-        }
     }
 
     private fun bubble(text: String, user: Boolean): TextView {
@@ -173,8 +134,7 @@ class ChatActivity : Activity() {
             }
             pendingResponse = null
             pendingDraft = ""
-            controls(client.activated)
-            if (!client.activated) activate()
+            controls(true)
         })
     }
 
