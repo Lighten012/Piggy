@@ -1,13 +1,24 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PIGGY_UPDATES_DIR", dir)
+	release := androidRelease{Package: "dev.pichat", Code: 6, Name: "0.5.0", MinSDK: 24, Size: 1, SHA: strings.Repeat("a", 64), Signer: strings.Repeat("b", 64)}
+	data, _ := json.Marshal(release)
+	if err := os.WriteFile(filepath.Join(dir, "latest.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if (r.URL.Path != "/chat" && r.URL.Path != "/history") || r.Header.Get("Authorization") != "Bearer internal" {
 			t.Error("unexpected upstream request")
@@ -28,6 +39,7 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 		{"GET", "/", true, 200, ""}, {"POST", "/chat", true, 405, ""}, {"GET", "/history", false, 401, ""}, {"GET", "/history?after=1", true, 200, "admin"},
 	} {
 		r := httptest.NewRequest(c.method, c.path, nil)
+		r.Header.Set("X-Piggy-Version-Code", "6")
 		r.Header.Set("X-Piggy-Owner", "admin")
 		if c.login {
 			r.SetBasicAuth("piggy", "pw")
@@ -38,4 +50,14 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 			t.Errorf("%s %s: got %d, owner %q", c.method, c.path, w.Code, w.Header().Get("X-Test-Owner"))
 		}
 	}
+	for _, code := range []string{"", "5", "7"} {
+		r := httptest.NewRequest("POST", mobileChat, nil)
+		r.Header.Set("X-Piggy-Version-Code", code)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != 426 {
+			t.Fatalf("client %q got %d", code, w.Code)
+		}
+	}
+
 }

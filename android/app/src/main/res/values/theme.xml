@@ -1,0 +1,11 @@
+<resources>
+    <style name="PiggyTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#754253</item>
+        <item name="android:windowBackground">#FCF8F5</item>
+        <item name="android:statusBarColor">#FCF8F5</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FCF8F5</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+</resources>

@@ -17,26 +17,31 @@ import java.security.MessageDigest
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 
-class AppUpdater(private val activity: Activity, private val ready: (String) -> Unit,
-                 private val notice: (String) -> Unit) {
+sealed class UpdateState {
+    object Checking : UpdateState()
+    object Current : UpdateState()
+    data class Downloading(val name: String) : UpdateState()
+    data class Ready(val name: String) : UpdateState()
+    data class Failed(val message: String) : UpdateState()
+}
+
+class AppUpdater(private val activity: Activity, private val changed: (UpdateState) -> Unit) {
     private val worker = Executors.newSingleThreadExecutor()
     private var checking = false
-    private var lastCheck = 0L
     @Volatile private var closed = false
     private var verified: File? = null
 
     private val manager = activity.packageManager
     private val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
     private val installed = manager.getPackageInfo(activity.packageName, flags)
-    val versionName: String get() = installed.versionName ?: ""
     private fun version(info: PackageInfo) = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
     private val cache = File(activity.cacheDir, "updates")
 
-    fun check(manual: Boolean = false) {
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (checking || (!manual && lastCheck != 0L && now - lastCheck < 4 * 60 * 60 * 1000)) return
-        lastCheck = now
+    fun check() {
+        if (checking || closed) return
         checking = true
+        verified = null
+        changed(UpdateState.Checking)
         worker.execute {
             val result = runCatching { findUpdate() }
             activity.runOnUiThread {
@@ -44,9 +49,10 @@ class AppUpdater(private val activity: Activity, private val ready: (String) -> 
                 checking = false
                 result.onSuccess { update ->
                     verified = update?.second
-                    if (update != null) ready(update.first)
-                    else if (manual) notice("当前已是最新版本")
-                }.onFailure { if (manual) notice(it.localizedMessage ?: "更新检查失败") }
+                    changed(if (update == null) UpdateState.Current else UpdateState.Ready(update.first))
+                }.onFailure {
+                    changed(UpdateState.Failed(it.localizedMessage ?: "无法连接更新服务"))
+                }
             }
         }
     }
@@ -86,7 +92,7 @@ class AppUpdater(private val activity: Activity, private val ready: (String) -> 
     }
 
     private fun findUpdate(): Pair<String, File>? {
-        val root = PiggyServer.origin(activity) + "/updates/android/"
+        val root = PiggyServer.ORIGIN + "/updates/android/"
         val manifest = read(URL(root + "latest.json")) { input ->
             val out = ByteArrayOutputStream()
             val buf = ByteArray(2048)
@@ -100,7 +106,8 @@ class AppUpdater(private val activity: Activity, private val ready: (String) -> 
         }
         check(manifest.getString("packageName") == activity.packageName) { "版本信息属于其他应用" }
         val code = manifest.getLong("versionCode")
-        if (code <= version(installed)) {
+        check(code >= version(installed)) { "服务器尚未发布此版本，请稍后重试" }
+        if (code == version(installed)) {
             cache.listFiles()?.filter { it.extension == "apk" }?.forEach { it.delete() }
             return null
         }
@@ -109,6 +116,8 @@ class AppUpdater(private val activity: Activity, private val ready: (String) -> 
         val size = manifest.getLong("size")
         val signer = manifest.getString("signerSha256")
         check(digest.matches(Regex("[0-9a-f]{64}")) && size in 1..134217728L && signers(installed) == setOf(signer)) { "更新清单校验失败" }
+        val name = manifest.getString("versionName")
+        activity.runOnUiThread { if (!closed) changed(UpdateState.Downloading(name)) }
         cache.mkdirs()
         val file = File(cache, "$digest.apk")
         if (file.isFile && runCatching { checkAPK(file, code, size, digest, signer) }.isFailure) file.delete()
@@ -132,12 +141,12 @@ class AppUpdater(private val activity: Activity, private val ready: (String) -> 
                 check(temp.renameTo(file)) { "无法保存更新包" }
             } finally { temp.delete() }
         }
-        return manifest.getString("versionName") to file
+        return name to file
     }
 
     fun install() {
         val file = verified
-        if (file == null || !file.isFile) { check(true); return }
+        if (file == null || !file.isFile) { check(); return }
         try {
             if (Build.VERSION.SDK_INT >= 26 && !manager.canRequestPackageInstalls()) {
                 activity.startActivityForResult(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -148,7 +157,7 @@ class AppUpdater(private val activity: Activity, private val ready: (String) -> 
             activity.startActivity(Intent(Intent.ACTION_VIEW)
                 .setDataAndType(content, "application/vnd.android.package-archive")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-        } catch (e: Exception) { notice(e.localizedMessage ?: "无法打开系统安装器") }
+        } catch (e: Exception) { changed(UpdateState.Failed("无法打开系统安装器，请重试")) }
     }
 
     fun close() { closed = true; worker.shutdownNow() }

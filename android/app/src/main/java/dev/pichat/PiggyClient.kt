@@ -8,9 +8,9 @@ import java.io.IOException
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 
-class PiggyClient(private val activity: Activity) {
+class PiggyClient(private val activity: Activity, private val outdated: () -> Unit) {
     private val worker = Executors.newSingleThreadExecutor()
-    private val endpoint = PiggyServer.url(activity, "/mobile/chat")
+    private val endpoint = PiggyServer.url("/mobile/chat")
     @Volatile private var closed = false
     @Volatile private var connection: HttpsURLConnection? = null
     private val prefs = activity.getSharedPreferences("conversation", Activity.MODE_PRIVATE)
@@ -32,10 +32,12 @@ class PiggyClient(private val activity: Activity) {
             http.connectTimeout = 15000
             http.readTimeout = 120000
             http.doOutput = true
+            http.setRequestProperty("X-Piggy-Version-Code", BuildConfig.VERSION_CODE.toString())
             http.setRequestProperty("Content-Type", "application/json")
             http.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
             val status = http.responseCode
             if (status !in 200..299) {
+                if (status == 426) ui(outdated)
                 if (status == 422) prefs.edit().remove("pendingId").commit()
                 val detail = http.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
                 val message = runCatching { JSONObject(detail).getString("error") }.getOrNull()

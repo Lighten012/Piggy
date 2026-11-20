@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -58,6 +59,15 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			if r.Method != http.MethodPost {
 				w.Header().Set("Allow", "POST")
 				fail(w, 405, "请使用 POST")
+				return
+			}
+			release, err := readRelease(updateDirectory())
+			if err != nil {
+				fail(w, 503, "版本服务暂时不可用，请稍后重试")
+				return
+			}
+			if r.Header.Get("X-Piggy-Version-Code") != strconv.Itoa(release.Code) {
+				fail(w, 426, "请重新打开 Piggy 并更新到 "+release.Name+" 后继续")
 				return
 			}
 			proxy.ServeHTTP(w, r)

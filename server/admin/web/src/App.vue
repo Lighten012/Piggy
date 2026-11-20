@@ -1,12 +1,15 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 
+import piggyMark from "./assets/piggy.svg?no-inline";
+
 const turns = ref([]);
 const thread = ref(null);
 const loading = ref(true);
 const older = ref(false);
 const error = ref("");
-const format = new Intl.DateTimeFormat("zh-CN", {dateStyle:"medium", timeStyle:"short"});
+const date = new Intl.DateTimeFormat("zh-CN", {year:"numeric", month:"long", day:"numeric"});
+const time = new Intl.DateTimeFormat("zh-CN", {hour:"2-digit", minute:"2-digit", hour12:false});
 let fetching = false, timer;
 const controller = new AbortController();
 
@@ -55,27 +58,28 @@ function visible() { if (!document.hidden) refresh(); }
 onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEventListener("visibilitychange", visible);});
 </script>
 <template>
-  <header><div class="brand"><i aria-hidden="true">P</i> Piggy</div><span>手机对话记录</span></header>
-  <main><p v-if="error" role="status">{{ error }}</p>
+  <header class="masthead"><div class="bar">
+    <div class="brand"><img :src="piggyMark" alt="" width="44" height="44"><span>Piggy</span></div>
+    <span class="mode">只读</span>
+  </div></header>
+  <main>
+    <div class="heading"><h1>手机对话记录</h1></div>
+    <p v-if="error" class="alert" role="status">{{ error }}</p>
     <section id="thread" ref="thread" aria-label="手机对话记录" tabindex="0">
-      <div v-if="!turns.length && !error" id="empty"><span class="mark" aria-hidden="true">P</span>
-        <h1>{{ loading ? "正在读取记录…" : "还没有手机消息" }}</h1></div>
+      <div v-if="!turns.length && !error" class="empty">
+        <img :src="piggyMark" alt="" width="64" height="64">
+        <p>{{ loading ? "正在读取记录…" : "还没有手机消息" }}</p>
+      </div>
       <button v-if="older" type="button" class="older" @click="refresh(true)">查看更早记录</button>
-      <article v-for="row in turns" :key="row.id">
-        <time :datetime="new Date(row.created).toISOString()">{{ format.format(row.created) }}</time>
-        <p class="message user"><strong>你</strong>{{ row.question }}</p>
-        <p v-if="row.answer" class="message assistant"><strong>Piggy</strong>{{ row.answer }}</p>
-        <p v-if="row.status !== 'complete'" class="state">{{ row.status === 'pending' ? '正在回复…' : '回复未完成' }}</p>
+      <article v-for="(row, i) in turns" :key="row.id">
+        <div class="day" v-if="i === 0 || date.format(turns[i - 1].created) !== date.format(row.created)"><span>{{ date.format(row.created) }}</span></div>
+        <div class="entry mine"><div class="byline">你 <time :datetime="new Date(row.created).toISOString()">{{ time.format(row.created) }}</time></div>
+          <p class="message user">{{ row.question }}</p></div>
+        <div class="entry"><div class="byline"><img :src="piggyMark" alt="" width="20" height="20">Piggy</div>
+          <p v-if="row.answer" class="message assistant">{{ row.answer }}</p>
+          <p v-if="row.status !== 'complete'" class="state">{{ row.status === 'pending' ? '正在回复…' : '回复未完成' }}</p>
+        </div>
       </article>
     </section>
   </main>
 </template>
-<style>
-#app { height:100%; display:flex; flex-direction:column }
-#app main { margin:0 auto }
-header span,time,.state {color:#526457;font-size:.875rem}
-article {display:flex;flex-direction:column;gap:12px;padding:14px 0 22px}
-time {align-self:center}
-.older {align-self:center;min-height:44px;padding:0 16px;border-radius:22px;background:white;border:1px solid #adbbaa;color:inherit}
-.state {margin:0}
-</style>
