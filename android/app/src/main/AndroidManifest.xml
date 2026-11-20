@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application android:label="Piggy" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:networkSecurityConfig="@xml/network">
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="dev.pichat.updates" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths"/>
+        </provider>
         <activity android:name=".ChatActivity" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

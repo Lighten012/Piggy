@@ -5,13 +5,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.io.IOException
-import java.net.URL
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 
 class PiggyClient(private val activity: Activity) {
     private val worker = Executors.newSingleThreadExecutor()
-    private val endpoint = URL("https://38.14.232.112:8888/mobile/chat")
+    private val endpoint = PiggyServer.url(activity, "/mobile/chat")
     @Volatile private var closed = false
     @Volatile private var connection: HttpsURLConnection? = null
     private val prefs = activity.getSharedPreferences("conversation", Activity.MODE_PRIVATE)

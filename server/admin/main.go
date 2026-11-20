@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -45,6 +46,10 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			fail(w, 403, "请求来源无效")
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, updatePrefix) {
+			androidUpdates(updateDirectory(), w, r)
+			return
+		}
 		if r.URL.Path == mobileChat {
 			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Mode") != "" {
 				fail(w, 403, "网页仅支持查看记录")
@@ -79,6 +84,16 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		if len(os.Args) != 3 || os.Args[1] != "publish-android" {
+			log.Fatal("usage: piggy-admin publish-android <prepared-directory>")
+		}
+		if err := publishAndroid(updateDirectory(), os.Args[2]); err != nil {
+			log.Fatal(err)
+		}
+		log.Print("Android release published")
+		return
+	}
 	password, workerToken := os.Getenv("PIGGY_ADMIN_PASSWORD"), os.Getenv("PIGGY_WORKER_TOKEN")
 	if password == "" || workerToken == "" {
 		log.Fatal("missing service configuration")

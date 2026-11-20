@@ -45,3 +45,29 @@ Linux 可用内存低于总量一半加 32 MiB 时，Pi 暂停接受新消息。
 (cd server/admin && go test -race ./...)
 (cd server && npm ci && node --test chat.test.ts)
 ```
+
+## Android 应用内更新
+
+手机启动或回到前台时检查版本（同一次运行最多每四小时自动检查一次），也可在“设置 → 检查更新”手动触发。发现高版本会从当前聊天服务器通过 HTTPS 自动下载，校验长度、SHA-256、包名、版本号和签名后交给 Android 系统覆盖安装。首次允许 Piggy 安装应用以及系统要求的安装确认由用户完成。已有 0.3.0 或更早版本需要先手动覆盖安装一次支持更新的版本。后续覆盖升级保留本机对话数据。
+
+Go 网关原生提供三个公开只读地址，手机免登录。网页管理和对话记录仍需登录。
+
+| 地址 | 用途 |
+|---|---|
+| `/updates/android/latest.json` | 最新版本号、最低 Android 版本、签名摘要、文件大小和 SHA-256 |
+| `/updates/android/Piggy.apk` | 首次安装的稳定下载链接 |
+| `/updates/android/<sha256>.apk` | 不可变安装包，下载中切换版本也不会拿错文件 |
+
+发布新版本时，递增 Android 的 `versionCode`，使用原 Piggy 发布密钥签名。在开发机运行以下命令，脚本会用 Android SDK 验证签名并从 APK 提取元数据。
+
+```sh
+python3 server/admin/prepare-android.py Piggy-signed.apk android-bundle --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+```
+
+将生成的 `android-bundle` 目录上传到服务器，再执行以下命令。发布命令串行校验版本、签名摘要和文件哈希，完整写入 APK 后原子切换版本清单，服务运行期间即可发布。
+
+```sh
+/lighten012/projects/Piggy/current/piggy-admin publish-android /path/to/android-bundle
+```
+
+版本清单和 APK 默认放在 `/lighten012/projects/Piggy/updates/android`，独立于服务端代码版本；可通过 `PIGGY_UPDATES_DIR` 调整，发布命令与 systemd 服务需使用同一目录。迁移时复制此目录及原有聊天数据、配置，部署相同网关并保留原发布签名。原 HTTPS 地址沿用时客户端无需改动，域名或 IP 改变时，在手机“设置 → 服务器地址”改一次，聊天和更新会一起切换。
