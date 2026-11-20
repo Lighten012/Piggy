@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
+import { Retention } from "./retention.ts";
 import { Journal, type Attachment } from "./journal.ts";
 import { readFileSync } from "node:fs";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -15,6 +16,13 @@ if (!workerToken || host !== "127.0.0.1") throw new Error("Pi requires a private
 const dbPath = process.env.PIGGY_DB;
 if (!dbPath) throw new Error("PIGGY_DB is required");
 const journal = new Journal(dbPath);
+const retention = new Retention(dbPath);
+async function cleanAttachments() {
+  try { await retention.sweep(journal); }
+  catch { console.warn("Attachment cleanup failed; will retry"); }
+  finally { setTimeout(cleanAttachments,60_000).unref(); }
+}
+void cleanAttachments();
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const workerAuth = digest("Bearer " + workerToken);
 let busy = false;
@@ -174,6 +182,15 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if (!timingSafeEqual(digest(req.headers.authorization || ""), workerAuth)) return reject(res,401,"身份无效");
   const url = new URL(req.url || "/", "http://localhost");
+  const prefix = "/history/files/";
+  if (url.pathname.startsWith(prefix) && req.headers["x-piggy-owner"] === "admin" &&
+      (req.method === "GET" || req.method === "HEAD")) {
+    void retention.serve(journal,url.pathname.slice(prefix.length),url.searchParams.get("download") === "1",
+      req.method === "HEAD",res).catch(() => {
+      if (!res.headersSent) reject(res,500,"附件暂时无法读取"); else res.destroy();
+    });
+    return;
+  }
   if (url.pathname === "/history" && req.method === "GET" && req.headers["x-piggy-owner"] === "admin") {
     const cursor = (name: string) => url.searchParams.has(name) ? Number(url.searchParams.get(name)) : null;
     const after = cursor("after"), before = cursor("before");
@@ -185,7 +202,7 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   if (req.headers["x-piggy-owner"] !== "mobile") return reject(res,405,"网页仅支持查看记录");
   if (url.pathname === "/attachments" && req.method === "POST") {
     if (!apiKey || (!fixturePort && memoryUnderPressure())) return reject(res,503,"服务暂时无法接收附件");
-    void receiveAttachment(req,res,journal,model.baseUrl,apiKey).catch(() => {
+    void receiveAttachment(req,res,journal,retention,model.baseUrl,apiKey).catch(() => {
       if (!res.headersSent) reject(res,500,"附件服务暂时不可用");
     });
     return;

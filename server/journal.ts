@@ -1,9 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
+import { previewType } from "./retention.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 export interface Attachment {
   id: string; name: string; size: number; image: number; remote: string; expires: number;
 }
+
+interface Copy { key: string; until: number; mime: string }
 
 export class Journal {
   private db: DatabaseSync;
@@ -22,6 +25,11 @@ export class Journal {
         image INTEGER NOT NULL, remote TEXT NOT NULL, expires INTEGER NOT NULL,
         PRIMARY KEY(conversation,id)
       );
+      CREATE TABLE IF NOT EXISTS local_files (
+        key TEXT PRIMARY KEY, conversation TEXT NOT NULL, attachment TEXT NOT NULL,
+        until INTEGER NOT NULL, mime TEXT NOT NULL, UNIQUE(conversation,attachment)
+      );
+      CREATE INDEX IF NOT EXISTS local_expiry ON local_files(until);
       CREATE INDEX IF NOT EXISTS recent_context ON turns(conversation,id) WHERE status='complete';
       UPDATE turns SET status='failed' WHERE status='pending';
     `);
@@ -42,11 +50,29 @@ export class Journal {
     return this.db.prepare("SELECT * FROM attachments WHERE conversation=? AND id=?")
       .get(conversation,id) as Attachment | undefined;
   }
-  saveAttachment(conversation: string, file: Attachment) {
-    this.db.prepare("INSERT INTO attachments(conversation,id,name,size,image,remote,expires) VALUES(?,?,?,?,?,?,?)")
-      .run(conversation,file.id,file.name,file.size,file.image,file.remote,file.expires);
-    this.db.prepare(`DELETE FROM attachments WHERE expires < ? AND NOT EXISTS
-      (SELECT 1 FROM turn_files f JOIN turns t ON t.id=f.turn_id WHERE t.conversation=attachments.conversation AND f.attachment=attachments.id)`).run(Date.now());
+  saveAttachment(conversation: string, file: Attachment, copy?: Copy) {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("INSERT INTO attachments(conversation,id,name,size,image,remote,expires) VALUES(?,?,?,?,?,?,?)")
+        .run(conversation,file.id,file.name,file.size,file.image,file.remote,file.expires);
+      if (copy) this.db.prepare("INSERT INTO local_files(key,conversation,attachment,until,mime) VALUES(?,?,?,?,?)")
+        .run(copy.key,conversation,file.id,copy.until,copy.mime);
+      this.db.prepare(`DELETE FROM attachments WHERE expires < ? AND NOT EXISTS
+        (SELECT 1 FROM turn_files f JOIN turns t ON t.id=f.turn_id WHERE t.conversation=attachments.conversation AND f.attachment=attachments.id)`).run(Date.now());
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK"); throw error;
+    }
+  }
+  forgetExpiredCopies(now: number) {
+    this.db.prepare("DELETE FROM local_files WHERE until<=?").run(now);
+  }
+  retained(key: string) {
+    return this.db.prepare(`SELECT a.name,l.until,l.mime FROM local_files l JOIN attachments a
+      ON a.conversation=l.conversation AND a.id=l.attachment WHERE l.key=? AND EXISTS
+      (SELECT 1 FROM turns t JOIN turn_files f ON f.turn_id=t.id
+       WHERE t.conversation=l.conversation AND f.attachment=l.attachment)`).get(key) as
+        {name:string;until:number;mime:string} | undefined;
   }
   turnFiles(turn: number | bigint) {
     return this.db.prepare(`SELECT a.* FROM turn_files f JOIN turns t ON t.id=f.turn_id
@@ -89,13 +115,16 @@ export class Journal {
 
   page(after: number | null, before: number | null) {
     const columns = `SELECT t.id,created,question,answer,status,a.name AS filename,a.size AS filesize,
-      (SELECT json_group_array(json_object('name',b.name,'size',b.size) ORDER BY f.position)
+      (SELECT json_group_array(json_patch(json_object('name',b.name,'size',b.size),
+         CASE WHEN l.until>? THEN json_object('key',l.key,'until',l.until,'mime',l.mime) ELSE '{}' END) ORDER BY f.position)
        FROM turn_files f JOIN attachments b ON b.conversation=t.conversation AND b.id=f.attachment
+       LEFT JOIN local_files l ON l.conversation=b.conversation AND l.attachment=b.id
        WHERE f.turn_id=t.id) AS files FROM turns t LEFT JOIN attachments a
       ON a.conversation=t.conversation AND a.id=t.attachment`;
     const rows = after !== null
-      ? this.db.prepare(columns + " WHERE t.id>? ORDER BY t.id LIMIT 40").all(after)
-      : this.db.prepare(columns + " WHERE t.id<? ORDER BY t.id DESC LIMIT 40").all(before ?? Number.MAX_SAFE_INTEGER).reverse();
-    return rows.map(row => ({...row, files:JSON.parse(String(row.files))}));
+      ? this.db.prepare(columns + " WHERE t.id>? ORDER BY t.id LIMIT 40").all(Date.now(),after)
+      : this.db.prepare(columns + " WHERE t.id<? ORDER BY t.id DESC LIMIT 40").all(Date.now(),before ?? Number.MAX_SAFE_INTEGER).reverse();
+    return rows.map(row => ({...row, files:JSON.parse(String(row.files)).map(({mime, ...file}: {mime?:string}) =>
+      mime ? {...file,preview:previewType(mime)} : file)}));
   }
 }

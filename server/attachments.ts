@@ -7,12 +7,14 @@ import type { Journal } from "./journal.ts";
 
 import { attachmentMime, isStaticGif } from "./attachment-format.ts";
 
+import { Retention, week } from "./retention.ts";
+
 const maxBytes = 10 * 1024 * 1024;
-const lifetime = 7 * 24 * 3600;
+const lifetime = week / 1000;
 export const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let uploading = false;
 
-export async function receiveAttachment(req: IncomingMessage, res: ServerResponse, journal: Journal, base: string, key: string) {
+export async function receiveAttachment(req: IncomingMessage, res: ServerResponse, journal: Journal, retention: Retention, base: string, key: string) {
   function reply(code: number, body: object) {
     res.writeHead(code, {"Content-Type":"application/json"});
     res.end(JSON.stringify(body));
@@ -60,8 +62,14 @@ export async function receiveAttachment(req: IncomingMessage, res: ServerRespons
       "OpenAI 无法接收此文件，请更换文件或格式" : "附件上传到 OpenAI 失败，请重试"});
     const remote = await response.json();
     if (typeof remote.id !== "string") throw new Error("Missing OpenAI file id");
-    journal.saveAttachment(conversation,{id,name,size,image:Number(image),remote:remote.id,
-      expires:(remote.expires_at || remote.created_at + lifetime)*1000});
+    const copy = await retention.keep(path);
+    try {
+      journal.saveAttachment(conversation,{id,name,size,image:Number(image),remote:remote.id,
+        expires:(remote.expires_at || remote.created_at + lifetime)*1000},{...copy,mime});
+    } catch (error) {
+      await retention.remove(copy.key);
+      throw error;
+    }
     reply(200,{id,size});
   } catch {
     if (!res.headersSent && !res.destroyed) reply(502,{error:"附件上传失败，请重试"});
