@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<meta name="theme-color" content="#f8f8f3"><title>Piggy · 对话</title>
+<link rel="stylesheet" href="/style.css"><script defer src="/chat.js"></script></head>
+<body><header><div class="brand"><i aria-hidden="true">P</i> Piggy</div><button id="reset" type="button">＋ 新对话</button></header>
+<main><section id="thread" aria-label="对话记录" tabindex="0"><div id="empty"><span aria-hidden="true" class="mark">P</span><h1>今天想聊什么？</h1></div><div id="messages"></div></section>
+<form><label for="message">给 Piggy 发消息</label><div class="composer"><textarea id="message" rows="2" maxlength="8000" placeholder="输入消息…" required></textarea><button id="send" type="submit">发送 ↑</button></div>
+<div id="status" role="status"></div></form></main></body></html>

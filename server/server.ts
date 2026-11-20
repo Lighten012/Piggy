@@ -1,9 +1,39 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createServer as createHttpsServer } from "node:https";
+import { readFileSync } from "node:fs";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createModels, type Model } from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
+
+const host = process.env.HOST || "127.0.0.1";
+const password = process.env.PIGGY_ADMIN_PASSWORD;
+const tls = process.env.PIGGY_TLS_CERT && process.env.PIGGY_TLS_KEY ? {
+  cert: readFileSync(process.env.PIGGY_TLS_CERT), key: readFileSync(process.env.PIGGY_TLS_KEY),
+} : undefined;
+if ((!["127.0.0.1", "::1"].includes(host) && (!password || !tls)) ||
+    Boolean(process.env.PIGGY_TLS_CERT) !== Boolean(process.env.PIGGY_TLS_KEY)) {
+  throw new Error("A public listener requires PIGGY_ADMIN_PASSWORD, PIGGY_TLS_CERT and PIGGY_TLS_KEY.");
+}
+const digest = (text: string) => createHash("sha256").update(text).digest();
+const expectedAuth = password ? digest("Basic " + Buffer.from("piggy:" + password).toString("base64")) : null;
+const assets = new Map<string, {type: string; data: Buffer}>();
+for (const [path, file, type] of [
+  ["/", "index.html", "text/html; charset=utf-8"],
+  ["/chat.js", "chat.js", "text/javascript; charset=utf-8"],
+  ["/style.css", "style.css", "text/css; charset=utf-8"],
+]) {
+  assets.set(path, {type, data: readFileSync(new URL("./web/" + file, import.meta.url))});
+}
+
+function memoryUnderPressure() {
+  if (process.platform !== "linux") return false;
+  const info = readFileSync("/proc/meminfo", "utf8");
+  const total = Number(info.match(/^MemTotal:\s+(\d+)/m)?.[1]);
+  const available = Number(info.match(/^MemAvailable:\s+(\d+)/m)?.[1]);
+  return available < total / 2 + 32 * 1024;
+}
 
 const models = createModels();
 models.setProvider(openaiProvider());
@@ -37,8 +67,11 @@ function reject(res: ServerResponse, status: number, error: string) {
 }
 async function chat(req: IncomingMessage, res: ServerResponse) {
   if (req.url !== "/chat" || req.method !== "POST") return reject(res, 404, "未知请求");
-  if (req.headers.origin || req.headers["content-type"]?.split(";")[0] !== "application/json") {
-    return reject(res, 415, "仅支持原生客户端 JSON 请求");
+  if (req.headers.origin && req.headers.origin !== (tls ? "https://" : "http://") + req.headers.host) {
+    return reject(res, 403, "请求来源无效");
+  }
+  if (req.headers["content-type"]?.split(";")[0] !== "application/json") {
+    return reject(res, 415, "请使用 JSON 请求");
   }
   if (!apiKey) return reject(res, 503, "后端尚未配置 PI_API_KEY");
   let size = 0;
@@ -57,17 +90,26 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   for (const [id, session] of sessions) {
     if (!session.busy && Date.now() - session.lastUsed > 3600000) sessions.delete(id);
   }
+  if (!fixturePort && memoryUnderPressure()) return reject(res, 503, "服务器可用内存不足，请稍后再试");
+  if (Array.from(sessions.values()).filter(s => s.busy).length >= 2) {
+    return reject(res, 429, "服务器正在处理其他对话，请稍后再试");
+  }
   const id = data.session ?? randomUUID();
   let session = sessions.get(id);
   if (!session) {
     if (data.session != null) return reject(res, 410, "会话已过期，请新建对话");
-    if (sessions.size >= 64) return reject(res, 429, "会话已满，请稍后再试");
+    if (sessions.size >= 8) {
+      const idle = [...sessions].filter(([, s]) => !s.busy).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+      sessions.delete(idle[0][0]);
+    }
     session = { agent: newAgent(), busy: false, lastUsed: Date.now() };
     sessions.set(id, session);
   }
   if (session.busy) return reject(res, 409, "上一条消息仍在生成");
   const { agent } = session;
   const previous = [...agent.state.messages];
+  // This chat has only user/assistant pairs. Keep the latest 12 completed turns.
+  agent.state.messages = previous.slice(-24);
   session.busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   res.flushHeaders();
@@ -107,13 +149,28 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     res.end();
   }
 }
-const server = createServer((req, res) => {
+function handle(req: IncomingMessage, res: ServerResponse) {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  if (expectedAuth && !timingSafeEqual(digest(req.headers.authorization || ""), expectedAuth)) {
+    res.setHeader("WWW-Authenticate", 'Basic realm="Piggy", charset="UTF-8"');
+    return reject(res, 401, "请登录 Piggy");
+  }
+  const asset = assets.get(req.url || "/");
+  if (asset && (req.method === "GET" || req.method === "HEAD")) {
+    res.setHeader("Content-Type", asset.type);
+    return res.end(req.method === "HEAD" ? undefined : asset.data);
+  }
   chat(req, res).catch(() => {
     if (!res.headersSent) reject(res, 500, "服务端请求失败");
     else res.end();
   });
-});
-server.listen(Number(process.env.PORT || 8787), "127.0.0.1", () => {
+}
+const server = tls ? createHttpsServer(tls, handle) : createServer(handle);
+server.requestTimeout = 120000;
+server.maxConnections = 32;
+server.listen(Number(process.env.PORT || 8888), host, () => {
   const address = server.address();
   if (address && typeof address !== "string") console.log("Piggy ready on port " + address.port);
 });

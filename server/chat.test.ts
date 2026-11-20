@@ -30,7 +30,7 @@ test("streams replies and preserves history across a failed turn", async t => {
   await once(fixture, "listening");
   t.after(() => fixture.close());
   const child = spawn(process.execPath, ["server.ts"], {
-    env: { ...process.env, PI_API_KEY: "", PI_MODEL: "gpt-4.1-mini", PORT: "0",
+    env: { ...process.env, PIGGY_ADMIN_PASSWORD: "fixture-password", HOST: "127.0.0.1", PI_API_KEY: "", PI_MODEL: "gpt-4.1-mini", PORT: "0",
       PI_LOCAL_FIXTURE_PORT: String((fixture.address() as AddressInfo).port) },
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -38,9 +38,19 @@ test("streams replies and preserves history across a failed turn", async t => {
   const [line] = await once(child.stdout, "data");
   const port = String(line).match(/port (\d+)/)?.[1];
   assert.ok(port);
+  const base = "http://127.0.0.1:" + port;
+  const headers = {authorization: "Basic " + Buffer.from("piggy:fixture-password").toString("base64"),
+    "content-type": "application/json", origin: base};
+  assert.equal((await fetch(base)).status, 401);
+  assert.equal((await fetch(base + "/chat", {method: "POST"})).status, 401);
+  const page = await fetch(base, { headers });
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<textarea/);
+  assert.equal((await fetch(base + "/chat", {method: "POST",
+    headers: {...headers, origin: "https://another.example"}, body: "{}"})).status, 403);
   async function send(text: string, session?: string) {
     const res = await fetch("http://127.0.0.1:" + port + "/chat", {
-      method: "POST", headers: { "content-type": "application/json" },
+      method: "POST", headers,
       body: JSON.stringify({ text, session }),
     });
     return (await res.text()).trim().split("\n").map(line => JSON.parse(line));
