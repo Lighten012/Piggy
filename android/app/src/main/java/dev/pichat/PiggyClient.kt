@@ -41,13 +41,20 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         return if (size >= 0) Formatter.formatFileSize(activity, size) else ""
     }
 
-    fun chooseFiles(uris: List<Uri>) {
+    internal val formats = AttachmentFormats(activity)
+
+    fun chooseFiles(uris: List<Uri>, finished: (String?) -> Unit) = worker.execute {
+        val result = runCatching { addSelection(uris) }
+        ui { finished(result.fold({ it }, { it.localizedMessage ?: "无法读取文件" })) }
+    }
+
+    private fun addSelection(uris: List<Uri>): String? {
         val current = attachments
         val added = uris.distinct().filter { uri -> current.none { it.getString("uri") == uri.toString() } }
-        if (added.isEmpty()) return
-        require(current.size + added.size <= MAX_FILES) { "每条消息最多可添加 4 个附件" }
+        if (added.isEmpty()) return null
+        val rejected = mutableListOf<String>()
         val resolver = activity.contentResolver
-        val files = added.map { uri ->
+        val files = added.mapNotNull { uri ->
             var name = uri.lastPathSegment?.substringAfterLast('/') ?: "附件"
             var size = -1L
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
@@ -56,17 +63,27 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                     if (!it.isNull(1)) size = it.getLong(1)
                 }
             }
-            require(size <= 10L * 1024 * 1024) { "每个附件最多 10 MB" }
+            val type = try {
+                require(size != 0L) { "$name 是空文件" }
+                require(size <= 10L * 1024 * 1024) { "$name 超过 10 MB" }
+                formats.validate(name, resolver.getType(uri), uri)
+            } catch (e: IllegalArgumentException) {
+                rejected += e.message ?: "暂不支持 $name"
+                return@mapNotNull null
+            }
             JSONObject().put("id", UUID.randomUUID().toString()).put("uri",uri.toString())
-                .put("name",name).put("size",size).put("mime",resolver.getType(uri) ?: "application/octet-stream")
+                .put("name",name).put("size",size).put("mime",type)
         }
         try {
-            added.forEach { resolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            require(current.size + files.size <= MAX_FILES) { "每条消息最多可添加 4 个附件" }
+            if (files.isEmpty()) return rejected.joinToString("；")
+            files.forEach { resolver.takePersistableUriPermission(Uri.parse(it.getString("uri")), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             persistSelection(current + files)
         } catch (e: Exception) {
             files.forEach(::releaseFile)
             throw e
         }
+        return rejected.takeIf { it.isNotEmpty() }?.joinToString("；")
     }
 
     private fun persistSelection(files: List<JSONObject>) {
@@ -143,6 +160,11 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             val id = if (prefs.getString("pendingText", null) == text && previousId != null) previousId else UUID.randomUUID().toString()
             check(prefs.edit().putString("pendingText", text).putString("pendingDraft",draftText).putString("pendingId", id).commit()) { "无法保存待发送消息" }
             val files = attachments
+            // Check restored drafts from older releases before uploading any part of a group.
+            for (file in files) {
+                val uri = Uri.parse(file.getString("uri"))
+                file.put("mime", formats.validate(file.getString("name"), file.optString("mime"), uri))
+            }
             for (file in files) {
                 if (file.optBoolean("uploaded")) continue
                 upload(file)

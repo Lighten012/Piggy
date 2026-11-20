@@ -1,9 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { openAsBlob } from "node:fs";
-import { mkdtemp, open, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Journal } from "./journal.ts";
+
+import { attachmentMime, isStaticGif } from "./attachment-format.ts";
 
 const maxBytes = 10 * 1024 * 1024;
 const lifetime = 7 * 24 * 3600;
@@ -21,6 +23,8 @@ export async function receiveAttachment(req: IncomingMessage, res: ServerRespons
   if (!uuid.test(conversation) || !uuid.test(id) || !name.trim() || Buffer.byteLength(name)>255 || /[\x00-\x1f\x7f/\\]/.test(name))
     return reply(400,{error:"附件信息无效，请重新选择文件"});
   if (Number(req.headers["content-length"]) > maxBytes) return reply(413,{error:"每个附件最多 10 MB"});
+  const mime = attachmentMime(name, String(req.headers["content-type"] ?? ""));
+  if (!mime) return reply(415,{error:"暂不支持该附件格式"});
   const existing = journal.attachment(conversation,id);
   if (existing) {
     if (existing.expires <= Date.now()) return reply(410,{error:"附件已过期，请重新选择文件"});
@@ -42,8 +46,9 @@ export async function receiveAttachment(req: IncomingMessage, res: ServerRespons
       }
     } finally { await file.close(); }
     if (!size) return reply(400,{error:"文件为空，请重新选择"});
-    const mime = String(req.headers["content-type"] || "application/octet-stream").split(";")[0];
-    const image = mime.startsWith("image/") || /\.(png|jpe?g|gif|webp)$/i.test(name);
+    if (mime === "image/gif" && !isStaticGif(await readFile(path)))
+      return reply(415,{error:"仅支持有效的静态 GIF"});
+    const image = mime.startsWith("image/");
     const form = new FormData();
     form.append("purpose","user_data");
     form.append("expires_after[anchor]","created_at");

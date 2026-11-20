@@ -45,6 +45,7 @@ class ChatActivity : Activity() {
     private lateinit var updater: AppUpdater
 
     private var versionCurrent = false
+    private var selecting = false
     private var generating = false
     private var promptedVersion: String? = null
     private val ink = Color.rgb(58, 42, 48)
@@ -70,7 +71,10 @@ class ChatActivity : Activity() {
     }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     private fun mark() = ImageView(this).apply {
-        setImageResource(R.drawable.piggy_mark)
+        setImageResource(R.drawable.piggy_portrait)
+        scaleType = ImageView.ScaleType.CENTER_CROP
+        background = shape(paper, 64)
+        clipToOutline = true
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
@@ -135,6 +139,7 @@ class ChatActivity : Activity() {
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "*/*"
+                    putExtra(Intent.EXTRA_MIME_TYPES, client.formats.pickerTypes)
                     putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                 }, 302)
@@ -226,7 +231,7 @@ class ChatActivity : Activity() {
                 addView(remove, FrameLayout.LayoutParams(dp(24),dp(24),Gravity.TOP or Gravity.END).apply {
                     topMargin = dp(4); rightMargin = dp(4)
                 })
-                setOnClickListener { client.removeFile(file); showFile() }
+                setOnClickListener { if (!selecting) { client.removeFile(file); showFile() } }
             }
             tile.addView(action, FrameLayout.LayoutParams(dp(48),dp(48),Gravity.TOP or Gravity.END))
             fileRow.addView(tile, LinearLayout.LayoutParams(wrap,wrap).apply { rightMargin = dp(6) })
@@ -350,8 +355,14 @@ class ChatActivity : Activity() {
             val clip = data?.clipData
             val uris = if (clip != null) (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
                 else listOfNotNull(data?.data)
-            runCatching { client.chooseFiles(uris); showFile() }.onFailure {
-                Toast.makeText(this,it.localizedMessage ?: "无法读取文件",Toast.LENGTH_LONG).show()
+            selecting = true
+            controls()
+            client.chooseFiles(uris) { error ->
+                selecting = false
+                showFile()
+                controls()
+                sendError.text = error
+                sendError.visibility = if (error.isNullOrEmpty()) View.GONE else View.VISIBLE
             }
         }
         if (requestCode == AppUpdater.PERMISSION_REQUEST && android.os.Build.VERSION.SDK_INT >= 26 &&
@@ -363,7 +374,16 @@ class ChatActivity : Activity() {
         val row = column().apply { gravity = if (user) Gravity.END else Gravity.START }
         val role = text(if (user) "你" else "Piggy", 13f, muted)
         role.setPadding(dp(9), 0, dp(9), dp(5))
-        row.addView(role, wrap, wrap)
+        if (user) row.addView(role, wrap, wrap) else {
+            val byline = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(5), 0, 0, dp(5))
+                addView(mark(), dp(22), dp(22))
+                role.setPadding(dp(6), 0, 0, 0)
+                addView(role, wrap, wrap)
+            }
+            row.addView(byline, wrap, wrap)
+        }
         if (files.isEmpty() && legacyLabel.isNotEmpty())
             row.addView(text(legacyLabel, 14f, muted), wrap, wrap)
         val group = if (files.isEmpty()) row else column().apply {
@@ -415,7 +435,7 @@ class ChatActivity : Activity() {
 
     private fun toBottom() = scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     private fun controls() {
-        val enabled = versionCurrent && !generating
+        val enabled = versionCurrent && !generating && !selecting
         attach.isEnabled = enabled
         send.isEnabled = enabled
         send.alpha = if (enabled) 1f else .55f

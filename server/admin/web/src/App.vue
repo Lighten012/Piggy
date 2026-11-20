@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 
 import MarkdownMessage from "./MarkdownMessage.vue";
-import piggyMark from "./assets/piggy.svg?no-inline";
+import piggyMark from "../../../../android/app/src/main/res/drawable-nodpi/piggy_portrait.webp?no-inline";
 
 const turns = ref([]);
 const thread = ref(null);
@@ -60,7 +60,7 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
 </script>
 <template>
   <header class="masthead"><div class="bar">
-    <div class="brand"><img :src="piggyMark" alt="" width="44" height="44"><span>Piggy</span></div>
+    <div class="brand"><img class="piggy-avatar" :src="piggyMark" alt="" width="44" height="44"><span>Piggy</span></div>
     <span class="mode">只读</span>
   </div></header>
   <main>
@@ -68,7 +68,7 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
     <p v-if="error" class="alert" role="status">{{ error }}</p>
     <section id="thread" ref="thread" aria-label="手机对话记录" tabindex="0">
       <div v-if="!turns.length && !error" class="empty">
-        <img :src="piggyMark" alt="" width="64" height="64">
+        <img class="piggy-avatar" :src="piggyMark" alt="" width="64" height="64">
         <p>{{ loading ? "正在读取记录…" : "还没有手机消息" }}</p>
       </div>
       <button v-if="older" type="button" class="older" @click="refresh(true)">查看更早记录</button>
@@ -77,7 +77,7 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
         <div class="entry mine"><div class="byline">你 <time :datetime="new Date(row.created).toISOString()">{{ time.format(row.created) }}</time></div>
           <span v-for="(file, index) in (row.files ?? (row.filename ? [{name:row.filename,size:row.filesize}] : []))" :key="index" class="file-note">{{ file.name }} · {{ Math.ceil(file.size / 1024) }} KB</span>
           <MarkdownMessage class="user" :text="row.question" /></div>
-        <div class="entry"><div class="byline"><img :src="piggyMark" alt="" width="20" height="20">Piggy</div>
+        <div class="entry"><div class="byline"><img class="piggy-avatar" :src="piggyMark" alt="" width="20" height="20">Piggy</div>
           <MarkdownMessage v-if="row.answer" class="assistant" :text="row.answer" />
           <p v-if="row.status !== 'complete'" class="state">{{ row.status === 'pending' ? '正在回复…' : '回复未完成' }}</p>
         </div>
@@ -85,3 +85,7 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
     </section>
   </main>
 </template>
+
+<style scoped>
+.piggy-avatar { object-fit: cover; border-radius: 50%; }
+</style>
