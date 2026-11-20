@@ -21,18 +21,19 @@ func fail(w http.ResponseWriter, status int, message string) {
 }
 
 const mobileChat = "/mobile/chat"
+const mobileFiles = "/mobile/attachments"
 
 func gateway(password, workerToken string, target *url.URL, files http.Handler) http.Handler {
 	expected := sha256.Sum256([]byte("piggy:" + password))
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
 		owner := "admin"
-		if pr.In.URL.Path == mobileChat {
+		if pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles {
 			owner = "mobile"
 		}
 		pr.SetURL(target)
 		pr.Out.URL.RawPath = ""
 		if owner == "mobile" {
-			pr.Out.URL.Path, pr.Out.URL.RawQuery = "/chat", ""
+			pr.Out.URL.Path, pr.Out.URL.RawQuery = strings.TrimPrefix(pr.In.URL.Path, "/mobile"), ""
 		}
 		pr.Out.Header.Set("X-Piggy-Owner", owner)
 		pr.Out.Header.Set("Authorization", "Bearer "+workerToken)
@@ -51,7 +52,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			androidUpdates(updateDirectory(), w, r)
 			return
 		}
-		if r.URL.Path == mobileChat {
+		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles {
 			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Mode") != "" {
 				fail(w, 403, "网页仅支持查看记录")
 				return
@@ -109,6 +110,6 @@ func main() {
 		log.Fatal("missing service configuration")
 	}
 	target, _ := url.Parse("http://127.0.0.1:18889")
-	server := http.Server{Addr: "127.0.0.1:18888", Handler: gateway(password, workerToken, target, http.FileServer(http.Dir("web/dist"))), ReadTimeout: 15 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 * 1024}
+	server := http.Server{Addr: "127.0.0.1:18888", Handler: gateway(password, workerToken, target, http.FileServer(http.Dir("web/dist"))), ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 * 1024}
 	log.Fatal(server.ListenAndServe())
 }

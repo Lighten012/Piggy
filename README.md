@@ -22,6 +22,12 @@ cd android
 
 调试包位于 `app/build/outputs/apk/debug/app-debug.apk`。分发时构建 `:app:assembleRelease`，用自己的 Android 发布密钥通过 `zipalign`、`apksigner` 签名。更新已安装应用需要相同签名。手机首次打开即可对话。APK 通过公网 HTTPS 向 `POST /mobile/chat` 发送消息，该接口允许匿名调用。网页使用只读的 `GET /history`，需要管理员登录。旧网页发送接口已关闭。
 
+### 聊天附件
+
+输入框左侧的「＋」打开 Android 系统文件选择器，每条消息可带一个不超过 10 MiB 的文件。可以单独发送文件。手机保留所选文件的读取权限直到发送成功或移除，失败后可以重试。文件选择器接受任意格式，OpenAI 决定能否读取。
+
+Go 将匿名、带版本号的 `POST /mobile/attachments` 流式转给 Pi。Pi 临时写盘，上传至 OpenAI Files 后清理本地原件，并将文件编号、名称、大小、所属对话和过期时间写入 SQLite。OpenAI 文件保留七天。附件和针对最近一次成功发送的附件的追问使用 Responses API，图片按图片输入，其他文件按文档输入。网页只读显示随消息发送的附件名称和大小。迁移 Nginx 时一并部署示例配置中的附件 location；普通聊天仍限 32 KiB。
+
 ## CVM 部署
 
 在开发机运行 `server/admin/build-release.sh /path/to/output` 构建 Vue 静态文件、Linux x86-64 Go 程序和服务端 Pi bundle。将发布目录放到 `/lighten012/projects/Piggy/releases/<revision>`，让 `current` 指向该版本。在 `runtime/node` 安装 Node.js 24。使用仅 root 可读的 `server.env` 配置以下变量。

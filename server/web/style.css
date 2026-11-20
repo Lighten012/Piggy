@@ -47,3 +47,5 @@ time {font-weight:400}
   #thread {padding-inline:1px}
   .message {max-width:90%}
 }
+
+.file-note { color: #715c62; font-size: .85rem; overflow-wrap: anywhere; }

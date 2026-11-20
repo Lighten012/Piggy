@@ -1,6 +1,8 @@
 package dev.pichat
 
 import android.app.Activity
+import android.content.Intent
+import android.text.TextUtils
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
@@ -22,6 +24,10 @@ class ChatActivity : Activity() {
     private lateinit var scroll: ScrollView
     private lateinit var empty: LinearLayout
     private lateinit var input: EditText
+    private lateinit var attach: TextView
+    private lateinit var fileRow: LinearLayout
+    private lateinit var fileName: TextView
+    private lateinit var remove: TextView
     private lateinit var send: ImageButton
     private lateinit var gate: LinearLayout
     private lateinit var gateTitle: TextView
@@ -101,6 +107,34 @@ class ChatActivity : Activity() {
             setPadding(dp(15), dp(6), dp(6), dp(6))
             elevation = dp(2).toFloat()
         }
+        fileRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(Color.WHITE, 20, true)
+            setPadding(dp(14), 0, dp(4), 0)
+        }
+        fileName = text("", 14f, plum).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
+        fileRow.addView(fileName, LinearLayout.LayoutParams(0, wrap, 1f))
+        remove = text("×", 24f, muted).apply {
+            contentDescription = "移除附件"
+            gravity = Gravity.CENTER
+            isFocusable = true
+            setOnClickListener { client.removeFile(); showFile() }
+        }
+        fileRow.addView(remove, dp(48), dp(48))
+        chat.addView(fileRow, match, wrap)
+        attach = text("＋", 24f, plum).apply {
+            contentDescription = "添加附件"
+            gravity = Gravity.CENTER
+            isFocusable = true
+            setOnClickListener {
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                }, 302)
+            }
+        }
+        composer.addView(attach, dp(48), dp(48))
         input = EditText(this).apply {
             hint = "给 Piggy 发消息…"
             contentDescription = "消息"
@@ -155,10 +189,17 @@ class ChatActivity : Activity() {
         val recent = client.recent
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
-            bubble(turn.getString("text"), true)
+            bubble(listOf(turn.optString("filename"), turn.getString("text")).filter { it.isNotBlank() }.joinToString("\n"), true)
             bubble(turn.getString("answer"), false)
         }
         input.setText(client.draft)
+        showFile()
+    }
+
+    private fun showFile() {
+        val file = client.attachment
+        fileRow.visibility = if (file == null) View.GONE else View.VISIBLE
+        fileName.text = file?.let { client.fileLabel(it) } ?: ""
     }
 
     private fun showVersion(state: UpdateState) {
@@ -212,6 +253,13 @@ class ChatActivity : Activity() {
     @Deprecated("Activity result callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 302 && resultCode == RESULT_OK) {
+            data?.data?.let { uri ->
+                runCatching { client.chooseFile(uri); showFile() }.onFailure {
+                    Toast.makeText(this,it.localizedMessage ?: "无法读取文件",Toast.LENGTH_LONG).show()
+                }
+            }
+        }
         if (requestCode == AppUpdater.PERMISSION_REQUEST && android.os.Build.VERSION.SDK_INT >= 26 &&
             packageManager.canRequestPackageInstalls()) updater.install()
     }
@@ -237,21 +285,25 @@ class ChatActivity : Activity() {
     private fun toBottom() = scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     private fun controls() {
         val enabled = versionCurrent && !generating
+        attach.isEnabled = enabled
+        remove.isEnabled = enabled
         send.isEnabled = enabled
         send.alpha = if (enabled) 1f else .55f
         input.isEnabled = enabled
     }
     private fun submit() {
-        val message = input.text.toString().trim()
+        val draft = input.text.toString().trim()
+        val file = client.attachment
+        val message = draft.ifEmpty { if (file != null) "请帮我看看这个文件。" else "" }
         if (message.isEmpty() || !send.isEnabled) return
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         generating = true
         controls()
         input.setText("")
-        bubble(message, true)
-        val reply = bubble("", false).apply { hint = "正在回复…" }
+        bubble(if (file == null) message else client.fileLabel(file) + "\n" + message, true)
+        val reply = bubble("", false).apply { hint = if (file == null) "正在回复…" else "正在发送附件…" }
         toBottom()
-        client.send(message, delta = { part ->
+        client.send(message, uploaded = { reply.hint = "正在回复…" }, delta = { part ->
             val follow = !scroll.canScrollVertically(1)
             reply.hint = ""
             reply.append(part)
@@ -262,6 +314,7 @@ class ChatActivity : Activity() {
                 input.setText(message)
                 input.setSelection(input.length())
             }
+            showFile()
             generating = false
             controls()
         })

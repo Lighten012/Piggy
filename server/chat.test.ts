@@ -80,7 +80,7 @@ test("records accepted mobile turns and restores context after restart", async t
   const list = await (await fetch(worker.base+"/history",{headers:admin})).json();
   assert.deepEqual(list.turns.map(r=>[r.question,r.answer,r.status]),[
     ["one","OK","complete"],["failed","","failed"],["two","OK","complete"],["separate","OK","complete"]]);
-  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","id","question","status"]);
+  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","filesize","id","question","status"]);
   assert.equal((await (await fetch(worker.base+"/history?after=2",{headers:admin})).json()).turns.length,2);
 });
 
@@ -101,4 +101,24 @@ test("history pages and interrupted turns survive reopening SQLite", t => {
   const context=reopened.previous("phone");
   assert.equal(context.length,12);
   assert.equal(context[0].content,"question34");
+});
+
+test("attachment references are scoped to a conversation and only successful turns select the follow-up file", t => {
+  const dir = mkdtempSync(join(tmpdir(),"piggy-files-"));
+  t.after(() => rmSync(dir,{recursive:true,force:true}));
+  const db = new Journal(join(dir,"files.sqlite"));
+  const file = {id:randomUUID(),name:"样本.txt",size:12,image:0,remote:"file-test",expires:Date.now()+60000};
+  db.saveAttachment("phone-a",file);
+  assert.equal(db.attachment("phone-b",file.id),undefined);
+  const turn = db.begin("phone-a","first","read",file.id);
+  assert.equal(db.latestAttachment("phone-a"),undefined);
+  db.complete(turn,"OK",[]);
+  const other = {...file,id:randomUUID(),name:"unknown.ext"};
+  db.saveAttachment("phone-a",other);
+  db.fail(db.begin("phone-a","failed","read",other.id),"");
+  assert.equal(db.latestAttachment("phone-a")?.id,file.id);
+  assert.equal(db.latestAttachment("phone-b"),undefined);
+  assert.equal(db.page(null,null)[0].filename,file.name);
+  assert.equal(db.page(null,null)[0].filesize,12);
+  assert.equal(db.lookup("phone-a","first")?.attachment,file.id);
 });

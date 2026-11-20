@@ -74,6 +74,7 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
       <article v-for="(row, i) in turns" :key="row.id">
         <div class="day" v-if="i === 0 || date.format(turns[i - 1].created) !== date.format(row.created)"><span>{{ date.format(row.created) }}</span></div>
         <div class="entry mine"><div class="byline">你 <time :datetime="new Date(row.created).toISOString()">{{ time.format(row.created) }}</time></div>
+          <span v-if="row.filename" class="file-note">{{ row.filename }} · {{ Math.ceil(row.filesize / 1024) }} KB</span>
           <p class="message user">{{ row.question }}</p></div>
         <div class="entry"><div class="byline"><img :src="piggyMark" alt="" width="20" height="20">Piggy</div>
           <p v-if="row.answer" class="message assistant">{{ row.answer }}</p>
