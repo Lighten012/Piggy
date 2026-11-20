@@ -17,7 +17,11 @@ test("records accepted mobile turns and restores context after restart", async t
   const fixture = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
-    const messages: { role: string; content: string | { text: string }[] }[] = JSON.parse(body).messages;
+    const payload = JSON.parse(body);
+    assert.equal(payload.model, "gpt-6.2-sol");
+    assert.equal(payload.reasoning_effort, "high");
+    assert.equal(payload.max_completion_tokens, 16384);
+    const messages: { role: string; content: string | { text: string }[] }[] = payload.messages;
     histories.push(messages
       .filter(message => message.role === "user")
       .map(({ content }) => typeof content === "string" ? content : content.map(part => part.text).join("")));
@@ -38,7 +42,7 @@ test("records accepted mobile turns and restores context after restart", async t
   t.after(() => fixture.close());
   async function start() {
     const child = spawn(process.execPath, [process.env.PIGGY_TEST_BUNDLE || "server.ts"], {
-      env: {...process.env, PIGGY_WORKER_TOKEN:"fixture-worker",HOST:"127.0.0.1",PORT:"0", PI_API_KEY:"",
+      env: {...process.env, PIGGY_WORKER_TOKEN:"fixture-worker",HOST:"127.0.0.1",PORT:"0", PI_API_KEY:"", PI_MODEL:"gpt-6.2-sol",
         PIGGY_DB:join(dir,"test.sqlite"),PI_LOCAL_FIXTURE_PORT:String((fixture.address() as AddressInfo).port)},
       stdio:["ignore","pipe","inherit"]
     });

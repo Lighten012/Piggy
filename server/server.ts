@@ -28,7 +28,16 @@ function memoryUnderPressure() {
 
 const models = createModels();
 models.setProvider(openaiProvider());
-const selected = models.getModel("openai", process.env.PI_MODEL || "gpt-4.1-mini");
+// Pi 1.5.2 predates the public GPT-6.2 Sol catalog entry.
+const sol: Model<"openai-completions"> = {
+  id: "gpt-6.2-sol", name: "GPT-6.2 Sol", provider: "openai", api: "openai-completions",
+  baseUrl: "https://api.openai.com/v1", input: ["text", "image"], reasoning: true,
+  contextWindow: 1050000, maxTokens: 128000,
+  cost: { input: 2, output: 10, cacheRead: 0.25, cacheWrite: 2.5,
+    tiers: [{ inputTokensAbove: 272000, input: 4, output: 15, cacheRead: 0.5, cacheWrite: 5 }] },
+};
+const modelId = process.env.PI_MODEL || sol.id;
+const selected = models.getModel("openai", modelId) ?? (modelId === sol.id ? sol : undefined);
 if (!selected) throw new Error("PI_MODEL is absent from the Pi OpenAI catalog.");
 
 // Only a loopback test fixture may override OpenAI's address.
@@ -41,12 +50,13 @@ const model: Model<"openai-completions"> = {
   baseUrl: fixturePort ? `http://127.0.0.1:${fixturePort}/v1` : "https://api.openai.com/v1",
 };
 const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
+const thinkingLevel = model.id === sol.id ? "high" : "off";
 function newAgent() {
   return new Agent({
-    initialState: { systemPrompt: "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。", model },
+    initialState: { systemPrompt: "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。", model, thinkingLevel },
     getApiKey: () => apiKey,
     streamFn: (_model, context, options) => streamSimple(model, context, {
-      ...options, maxTokens: 2048, maxRetries: 0,
+      ...options, maxTokens: thinkingLevel === "high" ? 16384 : 2048, maxRetries: 0,
     }),
   });
 }
@@ -117,9 +127,10 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       throw new Error("Generation failed");
     }
     const answer = last.content.filter(part => part.type === "text").map(part => part.text).join("");
+    if (!answer.trim()) throw new Error("Model returned no visible reply");
     journal.complete(id, answer, agent.state.messages.slice(-2));
     emit({ done: true, session: conversation });
-    console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, status:"ok",
+    console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel, status:"ok",
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
   } catch {
@@ -159,5 +170,5 @@ server.requestTimeout = 120000;
 server.maxConnections = 32;
 server.listen(Number(process.env.PORT || 18889), host, () => {
   const address = server.address();
-  if (address && typeof address !== "string") console.log("Piggy ready on port " + address.port);
+  if (address && typeof address !== "string") console.log(`Piggy ready on port ${address.port} (model=${model.id}, thinking=${thinkingLevel})`);
 });

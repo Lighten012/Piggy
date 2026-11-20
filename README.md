@@ -29,7 +29,7 @@ cd android
 | 变量 | 用途 |
 |---|---|
 | PI_API_KEY | Pi 专用的 OpenAI 密钥 |
-| PI_MODEL | 可选，默认 gpt-4.1-mini |
+| PI_MODEL | 可选，默认 gpt-6.2-sol。该模型使用 high 思考强度 |
 | PIGGY_ADMIN_PASSWORD | 网页账号 piggy 的独立密码 |
 | PIGGY_WORKER_TOKEN | Go 与 Pi 之间的随机内部密钥 |
 
