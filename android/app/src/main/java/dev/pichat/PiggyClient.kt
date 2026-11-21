@@ -33,6 +33,14 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             turn.optJSONArray("files")?.let(::objects) ?: listOfNotNull(turn.optJSONObject("file"))
     }
 
+    fun replyFiles(turn: JSONObject): List<JSONObject> =
+        turn.optJSONArray("replyFiles")?.let(::objects).orEmpty().filter { file ->
+            file.optString("key").matches(Regex("[0-9]{13}-[a-f0-9-]{36}"))
+        }.onEach { file ->
+            val key = file.getString("key")
+            file.put("id", key).put("uri", PiggyServer.url("/mobile/reply-files/$session/$key").toString())
+        }
+
     val attachments: List<JSONObject> get() = prefs.getString("files", null)?.let { objects(JSONArray(it)) }
         ?: listOfNotNull(prefs.getString("file", null)?.let(::JSONObject))
 
@@ -198,6 +206,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                 http.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
             }) { http ->
                 var done = false
+                var replies: JSONArray? = null
                 val answer = StringBuilder()
                 http.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
                     for (line in lines) {
@@ -217,7 +226,14 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                             answer.append(part)
                             ui { delta(part) }
                         }
-                        if (event.optBoolean("done")) done = true
+                        if (event.optBoolean("done")) {
+                            if (event.has("answer")) {
+                                answer.clear()
+                                answer.append(event.getString("answer"))
+                            }
+                            replies = event.optJSONArray("replyFiles")
+                            done = true
+                        }
                     }
                 }
                 if (!done) throw IOException("回复中断，请重试")
@@ -227,6 +243,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                     files.forEach { ImagePreviews.save(activity, it) }
                     turn.put("files", JSONArray(files))
                 }
+                replies?.let { turn.put("replyFiles", it) }
                 saved.put(turn)
                 val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
                 check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
@@ -240,9 +257,55 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         ui { finished(failure?.localizedMessage) }
     }
 
+    private val downloads = Executors.newSingleThreadExecutor()
+    private val downloadDir = java.io.File(activity.cacheDir, "reply-files")
+
+    private fun pruneDownloads() {
+        val now = System.currentTimeMillis()
+        downloadDir.listFiles()?.filter { (it.name.substringBefore('-').toLongOrNull() ?: 0L) <= now }
+            ?.forEach { it.deleteRecursively() }
+    }
+
+    init { downloads.execute(::pruneDownloads) }
+
+    fun fetchReply(file: JSONObject, target: Uri?, finished: (Uri?, String?) -> Unit) = downloads.execute {
+        val result = runCatching {
+            pruneDownloads()
+            check(file.getLong("until") > System.currentTimeMillis()) { "附件已过期" }
+            val key = file.getString("key")
+            require(key.matches(Regex("[0-9]{13}-[a-f0-9-]{36}")))
+            val directory = java.io.File(downloadDir, key)
+            directory.mkdirs()
+            val name = file.getString("name").substringAfterLast('/').substringAfterLast('\\')
+            val cached = java.io.File(directory, name.takeUnless { it.isBlank() || it == "." || it == ".." } ?: "附件")
+            if (!cached.isFile) {
+                val temp = java.io.File.createTempFile("download-", ".part", directory)
+                val http = PiggyServer.url("/mobile/reply-files/$session/$key").openConnection() as HttpsURLConnection
+                try {
+                    http.connectTimeout = 15000
+                    http.readTimeout = 60000
+                    http.instanceFollowRedirects = false
+                    check(http.responseCode == 200) { if (http.responseCode == 404) "附件已过期或不存在" else "下载失败，请重试" }
+                    val size = temp.outputStream().use { out -> http.inputStream.use { it.copyTo(out) } }
+                    check(size == file.getLong("size") && temp.renameTo(cached)) { "文件下载不完整，请重试" }
+                } finally {
+                    http.disconnect()
+                    temp.delete()
+                }
+            }
+            if (target != null) {
+                val stream = activity.contentResolver.openOutputStream(target, "wt") ?: throw IOException("无法保存文件")
+                stream.use { out -> cached.inputStream().use { it.copyTo(out) } }
+                target
+            } else androidx.core.content.FileProvider.getUriForFile(activity, activity.packageName + ".updates", cached)
+        }
+        ui { finished(result.getOrNull(), result.exceptionOrNull()?.localizedMessage) }
+    }
+
     fun close() {
         closed = true
         connection?.disconnect()
         worker.shutdownNow()
+        downloads.shutdown()
     }
 }

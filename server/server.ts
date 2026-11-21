@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
+import { ReplyFiles, fileTools, replyText } from "./reply-files.ts";
 import { Retention } from "./retention.ts";
 import { Journal, type Attachment } from "./journal.ts";
 import { readFileSync } from "node:fs";
@@ -65,7 +66,7 @@ const model: Model<"openai-responses"> = {
 const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
 const thinkingLevel = model.id === sol.id ? "high" : "off";
 const contextLimit = 300_000;
-const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。";
+const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。用户要求图片或可下载的文件时，调用对应工具实际生成。使用代码解释器生成的文件请在最终答复中链接到 sandbox:/mnt/data/ 下的成品。";
 function addFiles(input: unknown[], files: Attachment[]) {
   if (!files.length) return;
   const user = input.findLast((item): item is {role:"user"; content:unknown} =>
@@ -88,12 +89,16 @@ async function countInput(input: unknown[], tools?: unknown[], signal?: AbortSig
   if (!Number.isSafeInteger(used) || used < 0) throw new Error("Invalid input count");
   return {used, limit:contextLimit};
 }
+function toolFileIds(conversation: string, files: Attachment[]) {
+  const previous = journal.previousOutputs(conversation).filter(f => f.until > Date.now());
+  return [...files.map(f => f.remote), ...previous.map(f => f.remote)];
+}
 function promptForFiles(stored: number, available: number) {
   const prompt = [persona, ...loadedSkills.map(skill => skill.instructions)].join("\n\n");
   return prompt + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
 }
 type ContextUsage = Awaited<ReturnType<typeof countInput>>;
-function newAgent(files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["contextMessages"]>,
+function newAgent(outputs: ReplyFiles, availableIds: string[], files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["contextMessages"]>,
     measured: (usage: ContextUsage) => void,
     rejectGeneration: (message: string) => void) {
   return new Agent({
@@ -101,8 +106,11 @@ function newAgent(files: Attachment[], systemPrompt: string, messages: ReturnTyp
     getApiKey: () => apiKey,
     streamFn: (_model, context, options) => streamResponses(model, context, {
       ...options, maxTokens: thinkingLevel === "high" ? 16384 : 2048, maxRetries: 0,
+      onProviderStreamEvent: event => outputs.observe(event,options?.signal),
       async onPayload(payload) {
-        const {input, tools} = payload as {tools?:unknown[]; input: {role?:string; content?:unknown}[]};
+        const body = payload as {tools?:unknown[]; input: {role?:string; content?:unknown}[]};
+        const input = body.input;
+        const tools = body.tools = [...(body.tools ?? []), ...fileTools(availableIds)];
         addFiles(input, files);
         let usage: ContextUsage;
         try { usage = await countInput(input, tools, options?.signal); }
@@ -158,7 +166,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       }), new Set(["openai"]));
       addFiles(input,files);
       const tools = agentTools.length ? convertResponsesTools(agentTools.map(toToolDeclaration), {supportsStrictMode:true}) : undefined;
-      const usage = await countInput(input, tools);
+      const usage = await countInput(input, [...(tools ?? []), ...fileTools(toolFileIds(data.session,files))]);
       res.writeHead(200,{"Content-Type":"application/json"});
       res.end(JSON.stringify(usage));
     } catch { reject(res,503,"上下文用量暂时无法读取"); }
@@ -182,7 +190,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     if (existing.status === "pending") return reject(res,409,"该消息仍在生成，请稍后重试");
     if (existing.status === "failed") return reject(res,422,"上次生成中断，请重新发送");
     res.writeHead(200, {"Content-Type":"application/x-ndjson; charset=utf-8"});
-    res.end(JSON.stringify({delta:existing.answer}) + "\n" + JSON.stringify({done:true,session:conversation}) + "\n");
+    res.end(JSON.stringify({delta:existing.answer}) + "\n" + JSON.stringify({done:true,session:conversation,answer:existing.answer,replyFiles:journal.replyFiles(Number(existing.id))}) + "\n");
     return;
   }
   if (busy) return reject(res,409,"上一条消息仍在生成，请稍后重试");
@@ -199,12 +207,13 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const emit = (event: object) => res.write(JSON.stringify(event) + "\n");
   let failure = "生成失败，请稍后重试";
   let preflightFailure = false;
-  const agent = newAgent(files,promptForFiles(stored.length,files.length),messages,
+  const outputs = new ReplyFiles(retention,model.baseUrl,apiKey);
+  const agent = newAgent(outputs,toolFileIds(conversation,files),files,promptForFiles(stored.length,files.length),messages,
     context => emit({context}), message => { failure = message; preflightFailure = true; });
   const initialMessageCount = agent.state.messages.length;
   const stop = () => agent.abort();
   res.once("close", stop);
-  const timer = setTimeout(stop, 110000);
+  const timer = setTimeout(stop, 360000);
   let partial = "";
   const unsubscribe = agent.subscribe(event => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -212,7 +221,9 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       emit({ delta: event.assistantMessageEvent.delta });
     }
   });
+  const heartbeat = setInterval(() => { if (!res.destroyed) emit({pending:true}); },15000);
   const started = Date.now();
+  let committed = false;
 
   try {
     await agent.prompt(question);
@@ -226,18 +237,27 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       console.warn("Model call failed", code || (reason.includes("Connection") ? "connection" : "generation"));
       throw new Error("Generation failed");
     }
-    const answer = last.content.filter(part => part.type === "text").map(part => part.text).join("");
+    const text = last.content.filter(part => part.type === "text").map(part => part.text).join("");
+    const answer = replyText(text,outputs.files);
     if (!answer.trim()) throw new Error("Model returned no visible reply");
-    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[]);
-    emit({ done: true, session: conversation });
+    if (outputs.files.length) {
+      last.content = [...last.content.filter(part => part.type !== "text"), {type:"text",
+        text:answer+"\n回复附件："+outputs.files.map(f=>f.name).join("、")}];
+    }
+    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files);
+    committed = true;
+    emit({ done:true, session:conversation, answer, replyFiles:journal.replyFiles(id) });
     console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel, status:"ok",
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
   } catch {
+    if (committed) return;
+    await outputs.discard().catch(() => console.warn("Could not clean staged reply files"));
     journal.fail(id,partial);
     console.info(JSON.stringify({event:"chat", owner:"mobile", status:"failed", durationMs:Date.now()-started}));
     if (!res.destroyed) emit({ error: failure });
   } finally {
+    clearInterval(heartbeat);
     clearTimeout(timer);
     res.off("close", stop);
     unsubscribe();
@@ -255,6 +275,15 @@ function handle(req: IncomingMessage, res: ServerResponse) {
       (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, {"Content-Type":"application/json"});
     res.end(req.method === "HEAD" ? undefined : JSON.stringify(capabilityCatalog()));
+    return;
+  }
+  if (url.pathname.startsWith("/reply-files/") && req.headers["x-piggy-owner"] === "mobile" &&
+      (req.method === "GET" || req.method === "HEAD")) {
+    const [, , conversation,key,...extra] = url.pathname.split("/");
+    if (!uuid.test(conversation) || !key || extra.length) return reject(res,404,"附件不存在");
+    void retention.serve(journal,key,false,req.method === "HEAD",res,conversation).catch(() => {
+      if (!res.headersSent) reject(res,500,"附件暂时无法读取"); else res.destroy();
+    });
     return;
   }
   const prefix = "/history/files/";

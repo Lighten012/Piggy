@@ -28,7 +28,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 	expected := sha256.Sum256([]byte("piggy:" + password))
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
 		owner := "admin"
-		if pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext {
+		if pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext || strings.HasPrefix(pr.In.URL.Path, "/mobile/reply-files/") {
 			owner = "mobile"
 		}
 		pr.SetURL(target)
@@ -51,6 +51,10 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 		}
 		if strings.HasPrefix(r.URL.Path, updatePrefix) {
 			androidUpdates(updateDirectory(), w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/mobile/reply-files/") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			proxy.ServeHTTP(w, r)
 			return
 		}
 		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles || r.URL.Path == mobileContext {
@@ -111,6 +115,6 @@ func main() {
 		log.Fatal("missing service configuration")
 	}
 	target, _ := url.Parse("http://127.0.0.1:18889")
-	server := http.Server{Addr: "127.0.0.1:18888", Handler: gateway(password, workerToken, target, http.FileServer(http.Dir("web/dist"))), ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 * 1024}
+	server := http.Server{Addr: "127.0.0.1:18888", Handler: gateway(password, workerToken, target, http.FileServer(http.Dir("web/dist"))), ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 390 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 * 1024}
 	log.Fatal(server.ListenAndServe())
 }

@@ -1,3 +1,4 @@
+import { hostedTools } from "./reply-files.ts";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { toToolDeclaration } from "@earendil-works/pi-ai";
 
@@ -14,9 +15,9 @@ export const agentTools: AgentTool[] = [];
 export function capabilityCatalog() {
   return {
     skills: loadedSkills.map(({name, description, instructions}) => ({name, description, instructions})),
-    tools: agentTools.map(tool => {
+    tools: [...hostedTools.map(t => ({name:t.type,description:t.description})), ...agentTools.map(tool => {
       const {name, description, parameters} = toToolDeclaration(tool);
       return {name, description, parameters};
-    }),
+    })],
   };
 }

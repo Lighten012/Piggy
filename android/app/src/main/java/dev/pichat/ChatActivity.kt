@@ -50,6 +50,7 @@ class ChatActivity : Activity() {
     private lateinit var contextMeter: ContextMeter
     private var readingContext = false
     private var versionCurrent = false
+    private var saveTarget: JSONObject? = null
     private var selecting = false
     private var generating = false
     private var promptedVersion: String? = null
@@ -89,6 +90,7 @@ class ChatActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        saveTarget = state?.getString("saveReplyFile")?.let(::JSONObject)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = true
@@ -223,7 +225,7 @@ class ChatActivity : Activity() {
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
             bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
-            bubble(turn.getString("answer"), false)
+            bubble(turn.getString("answer"), false, client.replyFiles(turn))
         }
         input.setText(client.draft)
         showFile()
@@ -347,19 +349,56 @@ class ChatActivity : Activity() {
         if (!draft) addView(text("↗",18f,plum))
     }
 
+    private fun expired(file: JSONObject) =
+        file.has("until") && file.optLong("until") <= System.currentTimeMillis()
+
+    private fun saveReply(file: JSONObject) {
+        saveTarget = file
+        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = file.getString("mime")
+            putExtra(Intent.EXTRA_TITLE, file.getString("name"))
+        }, 303)
+    }
+
+    override fun onSaveInstanceState(state: Bundle) {
+        super.onSaveInstanceState(state)
+        saveTarget?.let { state.putString("saveReplyFile", it.toString()) }
+    }
+
     private fun openFile(file: JSONObject) {
+        if (expired(file)) {
+            Toast.makeText(this, "附件已过期", Toast.LENGTH_SHORT).show()
+            return
+        }
         val name = file.getString("name")
         val uri = Uri.parse(file.getString("uri"))
         val image = ImagePreviews.source(file)
         if (image != null) {
             val preview = previewView()
             val dialog = AlertDialog.Builder(this).setTitle(name).setView(preview)
-                .setPositiveButton("关闭", null).show()
+                .setPositiveButton("关闭", null).apply {
+                    if (file.has("key")) setNeutralButton("保存到手机") { _, _ -> saveReply(file) }
+                }.show()
             ImagePreviews.enlarge(preview, image, ImagePreviews.saved(this, file.optString("id")), name)
             dialog.setOnDismissListener { ImagePreviews.display(preview, null, "") }
             return
         }
-        var mime = file.optString("mime")
+        if (file.has("key")) {
+            AlertDialog.Builder(this).setTitle(name).setItems(arrayOf("用其他应用打开", "保存到手机")) { _, choice ->
+                if (choice == 1) saveReply(file)
+                else client.fetchReply(file, null) { local, error ->
+                    if (local != null) viewDocument(local, name, file.getString("mime"))
+                    else Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                }
+            }.show()
+            return
+        }
+        viewDocument(uri, name, file.optString("mime"))
+    }
+
+    private fun viewDocument(uri: Uri, name: String, contentType: String) {
+        var mime = contentType
         if (mime.isBlank() || mime == "application/octet-stream") {
             mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
                 ?: "application/octet-stream"
@@ -454,6 +493,16 @@ class ChatActivity : Activity() {
     @Deprecated("Activity result callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 303) {
+            val file = saveTarget
+            saveTarget = null
+            val target = data?.data
+            if (resultCode == RESULT_OK && file != null && target != null) {
+                client.fetchReply(file, target) { _, error ->
+                    Toast.makeText(this, error ?: "文件已保存", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
         if (requestCode == 302 && resultCode == RESULT_OK) {
             val clip = data?.clipData
             val uris = if (clip != null) (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
@@ -490,13 +539,13 @@ class ChatActivity : Activity() {
             row.addView(text(legacyLabel, 14f, muted), wrap, wrap)
         val group = if (files.isEmpty()) row else column().apply {
             val width = minOf(dp(276), (resources.displayMetrics.widthPixels * .76f).toInt())
-            background = shape(lavender, 20)
+            background = shape(if (user) lavender else Color.WHITE, 20, !user)
             setPadding(dp(5),dp(5),dp(5),dp(5))
             row.addView(this,width,wrap)
             var index = 0
             while (index < files.size) {
                 val file = files[index++]
-                val image = ImagePreviews.source(file)
+                val image = if (expired(file)) null else ImagePreviews.source(file)
                 val item: View
                 val height: Int
                 if (image != null) {
@@ -507,13 +556,18 @@ class ChatActivity : Activity() {
                     }
                     addPhoto(file,image,0)
                     val next = files.getOrNull(index)
-                    val nextImage = next?.let { ImagePreviews.source(it) }
+                    val nextImage = next?.takeUnless(::expired)?.let { ImagePreviews.source(it) }
                     if (next != null && nextImage != null) {
                         addPhoto(next,nextImage,4)
                         index++
                     }
                     item = photos
                     height = dp(if (photos.childCount == 2) 126 else 172)
+                } else if (expired(file)) {
+                    item = text(file.getString("name") + " · 附件已过期", 14f, muted).apply {
+                        setPadding(dp(10), dp(8), dp(10), dp(8))
+                    }
+                    height = wrap
                 } else {
                     item = documentTile(file,false)
                     height = dp(66)
@@ -579,7 +633,12 @@ class ChatActivity : Activity() {
         }, finished = { error ->
             reply.removeCallbacks(render)
             if (error == null) {
-                render.run()
+                val follow = !scroll.canScrollVertically(1)
+                val history = client.recent
+                val turn = history.getJSONObject(history.length() - 1)
+                transcript.removeViewAt(firstPendingRow + 1)
+                bubble(turn.getString("answer"), false, client.replyFiles(turn))
+                if (follow) toBottom()
             } else {
                 transcript.removeViews(firstPendingRow, transcript.childCount - firstPendingRow)
                 if (firstPendingRow == 1) empty.visibility = View.VISIBLE

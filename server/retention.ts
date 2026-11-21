@@ -48,8 +48,8 @@ export class Retention {
     }
     journal.forgetExpiredCopies(now);
   }
-  async serve(journal: Journal, key: string, download: boolean, head: boolean, res: ServerResponse) {
-    const record = archiveKey.test(key) ? journal.retained(key) : undefined;
+  async serve(journal: Journal, key: string, download: boolean, head: boolean, res: ServerResponse, conversation?: string) {
+    const record = archiveKey.test(key) ? journal.retained(key,conversation) : undefined;
     if (!record || record.until <= Date.now()) {
       res.writeHead(404); res.end("附件已过期或不存在"); return;
     }

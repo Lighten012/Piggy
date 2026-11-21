@@ -110,6 +110,19 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
           <MarkdownMessage class="user" :text="row.question" /></div>
         <div class="entry"><div class="byline"><img class="piggy-avatar" :src="piggyMark" alt="" width="20" height="20">Piggy</div>
           <MarkdownMessage v-if="row.answer" class="assistant" :text="row.answer" />
+          <div v-for="file in row.replyFiles" :key="file.key" class="reply-file">
+            <span class="file-note">{{ file.name }} · {{ Math.ceil(file.size / 1024) }} KB</span>
+            <template v-if="file.until > now">
+              <a v-if="file.preview?.startsWith('image/')" :href="fileUrl(file)" target="_blank" rel="noopener">
+                <img class="attachment-photo" :src="fileUrl(file)" :alt="file.name" loading="lazy">
+              </a>
+              <div class="file-actions">
+                <a v-if="file.preview" :href="fileUrl(file)" target="_blank" rel="noopener">查看</a>
+                <a :href="fileUrl(file) + '?download=1'" :download="file.name">下载</a>
+              </div>
+            </template>
+            <small v-else>附件已过期</small>
+          </div>
           <p v-if="row.status !== 'complete'" class="state">{{ row.status === 'pending' ? '正在回复…' : '回复未完成' }}</p>
         </div>
       </article>
@@ -126,6 +139,7 @@ nav a:focus-visible {outline:2px solid var(--berry);outline-offset:2px}
 .piggy-avatar { object-fit: contain; border-radius: 50%; }
 .attachment { display: grid; justify-items: end; gap: 4px; max-width: 100%; }
 .attachment-photo { display: block; max-width: min(180px, 60vw); max-height: 140px; border-radius: 10px; }
+.reply-file {display:grid;gap:5px;padding:10px 14px;border:1px solid var(--line);border-radius:14px;background:white;overflow-wrap:anywhere}
 .file-actions { display: flex; gap: 16px; }
 .file-actions a { color: #754253; font-size: .85rem; padding-block: 3px; }
 </style>

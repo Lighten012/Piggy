@@ -106,7 +106,7 @@ test("records accepted mobile turns and restores context after restart", async t
   const list = await (await fetch(worker.base+"/history",{headers:admin})).json();
   assert.deepEqual(list.turns.map(r=>[r.question,r.answer,r.status]),[
     ["one","OK","complete"],["failed","","failed"],["two","OK","complete"],["separate","OK","complete"]]);
-  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","files","filesize","id","question","status"]);
+  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","files","filesize","id","question","replyFiles","status"]);
   assert.equal((await (await fetch(worker.base+"/history?after=2",{headers:admin})).json()).turns.length,2);
   const preview = await fetch(worker.base+"/context",{method:"POST",headers:mobile,body:JSON.stringify({session})});
   assert.deepEqual(await preview.json(),{used:12,limit:300000});

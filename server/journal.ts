@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import type { ReplyFile } from "./reply-files.ts";
 import { previewType } from "./retention.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
@@ -40,10 +41,16 @@ export class Journal {
         turn_id INTEGER NOT NULL, position INTEGER NOT NULL, attachment TEXT NOT NULL,
         PRIMARY KEY(turn_id,position), UNIQUE(turn_id,attachment)
       );
+      CREATE TABLE IF NOT EXISTS reply_files (
+        key TEXT PRIMARY KEY, turn_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL,
+        mime TEXT NOT NULL, size INTEGER NOT NULL, until INTEGER NOT NULL, UNIQUE(turn_id,position)
+      );
       CREATE INDEX IF NOT EXISTS turn_files_attachment ON turn_files(attachment);
       INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
     `);
     this.initializeContext();
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
+      this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");
   }
 
   private initializeContext() {
@@ -98,7 +105,19 @@ export class Journal {
   forgetExpiredCopies(now: number) {
     this.db.prepare("DELETE FROM local_files WHERE until<=?").run(now);
   }
-  retained(key: string) {
+  replyFiles(turn: number | bigint) {
+    return this.db.prepare("SELECT key,name,mime,size,until FROM reply_files WHERE turn_id=? ORDER BY position")
+      .all(turn).map(row => ({...row,preview:previewType(String(row.mime))}));
+  }
+  previousOutputs(conversation: string): ReplyFile[] {
+    const row = this.db.prepare(`SELECT output_files FROM active_context WHERE conversation=? AND output_files IS NOT NULL
+      ORDER BY sequence DESC LIMIT 1`).get(conversation);
+    return row ? JSON.parse(String(row.output_files)) : [];
+  }
+  retained(key: string, conversation?: string) {
+    const output = this.db.prepare(`SELECT f.name,f.until,f.mime FROM reply_files f JOIN turns t ON t.id=f.turn_id
+      WHERE f.key=? AND (? IS NULL OR t.conversation=?)`).get(key,conversation ?? null,conversation ?? null);
+    if (output || conversation !== undefined) return output as {name:string;until:number;mime:string} | undefined;
     return this.db.prepare(`SELECT a.name,l.until,l.mime FROM local_files l JOIN attachments a
       ON a.conversation=l.conversation AND a.id=l.attachment WHERE l.key=? AND EXISTS
       (SELECT 1 FROM turns t JOIN turn_files f ON f.turn_id=t.id
@@ -142,14 +161,16 @@ export class Journal {
       throw error;
     }
   }
-  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = []) {
+  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = []) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const turn = this.db.prepare("UPDATE turns SET answer=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
         .get(answer,id);
       if (!turn) throw new Error("Turn is no longer pending");
-      this.db.prepare("INSERT INTO active_context(conversation,messages,files) VALUES(?,?,?)")
-        .run(turn.conversation,JSON.stringify(messages),files.length ? JSON.stringify(files) : null);
+      const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until) VALUES(?,?,?,?,?,?,?)");
+      outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until));
+      this.db.prepare("INSERT INTO active_context(conversation,messages,files,output_files) VALUES(?,?,?,?)")
+        .run(turn.conversation,JSON.stringify(messages),files.length ? JSON.stringify(files) : null,outputs.length ? JSON.stringify(outputs) : null);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -171,7 +192,7 @@ export class Journal {
     const rows = after !== null
       ? this.db.prepare(columns + " WHERE t.id>? ORDER BY t.id LIMIT 40").all(Date.now(),after)
       : this.db.prepare(columns + " WHERE t.id<? ORDER BY t.id DESC LIMIT 40").all(Date.now(),before ?? Number.MAX_SAFE_INTEGER).reverse();
-    return rows.map(row => ({...row, files:JSON.parse(String(row.files)).map(({mime, ...file}: {mime?:string}) =>
+    return rows.map(row => ({...row, replyFiles:this.replyFiles(Number(row.id)), files:JSON.parse(String(row.files)).map(({mime, ...file}: {mime?:string}) =>
       mime ? {...file,preview:previewType(mime)} : file)}));
   }
 }

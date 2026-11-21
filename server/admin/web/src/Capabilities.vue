@@ -44,7 +44,8 @@ onUnmounted(() => controller.abort());
         <p v-if="!catalog.tools.length" class="empty-note">当前 Agent 未注册可调用的工具。</p>
         <details v-for="tool in catalog.tools" :key="tool.name">
           <summary><strong>{{ tool.name }}</strong><small>{{ tool.description }}</small></summary>
-          <pre aria-label="工具参数">{{ JSON.stringify(tool.parameters, null, 2) }}</pre>
+          <p v-if="!tool.parameters">由 OpenAI 执行</p>
+          <pre v-else aria-label="工具参数">{{ JSON.stringify(tool.parameters, null, 2) }}</pre>
         </details>
       </section>
     </template>
