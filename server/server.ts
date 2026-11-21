@@ -93,7 +93,7 @@ function promptForFiles(stored: number, available: number) {
   return prompt + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
 }
 type ContextUsage = Awaited<ReturnType<typeof countInput>>;
-function newAgent(files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["previous"]>,
+function newAgent(files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["contextMessages"]>,
     measured: (usage: ContextUsage) => void,
     rejectGeneration: (message: string) => void) {
   return new Agent({
@@ -149,9 +149,9 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     if (readingContext) return reject(res,503,"上下文用量正在读取，请稍后重试");
     readingContext = true;
     try {
-      const stored = journal.latestFiles(data.session);
+      const stored = journal.contextFiles(data.session);
       const files = stored.filter((file): file is Attachment => !!file && file.expires > Date.now());
-      const messages = journal.previous(data.session) as Message[];
+      const messages = journal.contextMessages(data.session) as Message[];
       if (files.length) messages.push({role:"user",content:[{type:"text",text:""}],timestamp:Date.now()});
       const input = convertResponsesMessages(model, normalizeContext({
         systemPrompt:promptForFiles(stored.length, files.length), messages
@@ -187,10 +187,11 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   }
   if (busy) return reject(res,409,"上一条消息仍在生成，请稍后重试");
   if (!fixturePort && memoryUnderPressure()) return reject(res,503,"服务器可用内存不足，请稍后重试");
-  const stored = ids.length ? ids.map(id => journal.attachment(conversation,id)) : journal.latestFiles(conversation);
-  if (stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
+  const stored = ids.length ? ids.map(id => journal.attachment(conversation,id)) : journal.contextFiles(conversation);
+  if (ids.length && stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
   const files = stored.filter((f): f is Attachment => !!f && f.expires > Date.now());
   if (ids.length && files.length !== ids.length) return reject(res,410,"附件已过期，请重新选择");
+  const messages = journal.contextMessages(conversation);
   const id = journal.begin(conversation,request,question,ids);
   busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
@@ -198,8 +199,9 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const emit = (event: object) => res.write(JSON.stringify(event) + "\n");
   let failure = "生成失败，请稍后重试";
   let preflightFailure = false;
-  const agent = newAgent(files,promptForFiles(stored.length,files.length),journal.previous(conversation),
+  const agent = newAgent(files,promptForFiles(stored.length,files.length),messages,
     context => emit({context}), message => { failure = message; preflightFailure = true; });
+  const initialMessageCount = agent.state.messages.length;
   const stop = () => agent.abort();
   res.once("close", stop);
   const timer = setTimeout(stop, 110000);
@@ -226,7 +228,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     }
     const answer = last.content.filter(part => part.type === "text").map(part => part.text).join("");
     if (!answer.trim()) throw new Error("Model returned no visible reply");
-    journal.complete(id, answer, agent.state.messages.slice(-2));
+    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[]);
     emit({ done: true, session: conversation });
     console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel, status:"ok",
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,

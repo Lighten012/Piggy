@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { capabilityCatalog } from "./capabilities.ts";
+import { DatabaseSync } from "node:sqlite";
 import { Journal } from "./journal.ts";
 
 test("records accepted mobile turns and restores context after restart", async t => {
@@ -27,6 +28,10 @@ test("records accepted mobile turns and restores context after restart", async t
       .map((item: {content:{text:string}[]}) => item.content.map(part => part.text).join(""));
     assert.ok(payload.input.some((item: {role?:string;content:unknown}) =>
       item.role === "developer" && JSON.stringify(item.content).includes("个人助手 Piggy")));
+    if (users.at(-1) === "turn 101") {
+      const replies = payload.input.filter((item: {role?:string}) => item.role === "assistant");
+      assert.equal(replies.length,100);
+    }
     if (req.url === "/v1/responses/input_tokens") {
       if (users.at(-1) === "unknown") { res.writeHead(503); res.end(); return; }
       const tokens = users.at(-1) === "overflow" ? 300001 : users.at(-1) === "exact" ? 300000 : users.length + 10;
@@ -124,6 +129,14 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.equal(filePreview.status,200);
   assert.deepEqual(fileInputs.at(-1),["file-notes"]);
 
+  const longSession = randomUUID();
+  const questions = Array.from({length:100}, (_,i) => "turn "+(i+1));
+  for (const question of questions) assert.equal((await send(question,randomUUID(),longSession)).at(-1).done,true);
+  const counted = await fetch(worker.base+"/context",{method:"POST",headers:mobile,body:JSON.stringify({session:longSession})});
+  assert.deepEqual(await counted.json(),{used:110,limit:300000});
+  assert.equal((await send("turn 101",randomUUID(),longSession)).at(-1).done,true);
+  assert.deepEqual(histories.at(-1),[...questions,"turn 101"]);
+
 });
 
 test("history pages and interrupted turns survive reopening SQLite", t => {
@@ -140,9 +153,9 @@ test("history pages and interrupted turns survive reopening SQLite", t => {
   assert.equal(reopened.lookup("phone","46")?.status,"failed");
   assert.equal(reopened.page(null,null)[0].id,7);
   assert.equal(reopened.page(null,7).length,6);
-  const context=reopened.previous("phone");
-  assert.equal(context.length,12);
-  assert.equal(context[0].content,"question34");
+  const context=reopened.contextMessages("phone");
+  assert.equal(context.length,45);
+  assert.equal(context[0].content,"question1");
 });
 
 test("attachment references are scoped to a conversation and only successful turns select the follow-up file", t => {
@@ -153,13 +166,13 @@ test("attachment references are scoped to a conversation and only successful tur
   db.saveAttachment("phone-a",file);
   assert.equal(db.attachment("phone-b",file.id),undefined);
   const turn = db.begin("phone-a","first","read",[file.id]);
-  assert.equal(db.latestFiles("phone-a")[0],undefined);
-  db.complete(turn,"OK",[]);
+  assert.equal(db.contextFiles("phone-a")[0],undefined);
+  db.complete(turn,"OK",[],[file.id]);
   const other = {...file,id:randomUUID(),name:"unknown.ext"};
   db.saveAttachment("phone-a",other);
   db.fail(db.begin("phone-a","failed","read",[other.id]),"");
-  assert.equal(db.latestFiles("phone-a")[0]?.id,file.id);
-  assert.equal(db.latestFiles("phone-b")[0],undefined);
+  assert.equal(db.contextFiles("phone-a")[0]?.id,file.id);
+  assert.equal(db.contextFiles("phone-b")[0],undefined);
   assert.equal(db.page(null,null)[0].filename,file.name);
   assert.equal(db.page(null,null)[0].filesize,12);
   assert.equal(db.lookup("phone-a","first")?.attachment,file.id);
@@ -173,10 +186,38 @@ test("multi-file turns preserve all ordered references across restart, retries a
   const files = ["photo.png","notes.txt"].map(name => ({id:randomUUID(),name,size:42,image:Number(name.endsWith(".png")),remote:"fixture",expires:Date.now()+60000}));
   files.forEach(file => db.saveAttachment("phone",file));
   const turn = db.begin("phone","request","compare",files.map(f=>f.id));
-  db.complete(turn,"ok",[]);
+  db.complete(turn,"ok",[],files.map(f=>f.id));
   db = new Journal(path);
-  assert.deepEqual(db.latestFiles("phone").map(f=>f.name),["photo.png","notes.txt"]);
+  assert.deepEqual(db.contextFiles("phone").map(f=>f.name),["photo.png","notes.txt"]);
   assert.deepEqual(db.turnFiles(Number(db.lookup("phone","request")?.id)).map(f=>f.id),files.map(f=>f.id));
   assert.deepEqual(db.page(null,null)[0].files,files.map(({name,size})=>({name,size})));
-  assert.deepEqual(db.latestFiles("second phone"),[]);
+  assert.deepEqual(db.contextFiles("second phone"),[]);
+});
+
+test("legacy context imports once and can change independently of the transcript", t => {
+  const dir = mkdtempSync(join(tmpdir(),"piggy-context-"));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path = join(dir,"chat.sqlite");
+  const sql = new DatabaseSync(path);
+  sql.exec(`CREATE TABLE turns(id INTEGER PRIMARY KEY, conversation TEXT, request TEXT, created INTEGER,
+    question TEXT,answer TEXT,status TEXT,context TEXT,attachment TEXT,UNIQUE(conversation,request))`);
+  const message = {role:"user" as const, content:"original", timestamp:1};
+  sql.prepare("INSERT INTO turns VALUES(1,'phone','one',1,'original','ok','complete',?,NULL)").run(JSON.stringify([message]));
+  const journal = new Journal(path);
+  assert.deepEqual(journal.contextMessages("phone"),[message]);
+  sql.exec("UPDATE turns SET question='edited archive' WHERE id=1");
+  assert.deepEqual(journal.contextMessages("phone"),[message]);
+  sql.exec("DELETE FROM active_context");
+  assert.deepEqual(new Journal(path).contextMessages("phone"),[]);
+  assert.equal(journal.page(null,null)[0].question,"edited archive");
+
+  const id = journal.begin("phone","two","new");
+  sql.exec("CREATE TRIGGER simulate_failure BEFORE INSERT ON active_context BEGIN SELECT RAISE(ABORT,'fixture'); END");
+  assert.throws(()=>journal.complete(id,"answer",[message]),/fixture/);
+  assert.equal(journal.lookup("phone","two")?.status,"pending");
+  sql.exec("DROP TRIGGER simulate_failure");
+  journal.complete(id,"answer",[message]);
+  assert.throws(()=>journal.complete(id,"answer",[message]),/pending/);
+  assert.deepEqual(journal.contextMessages("phone"),[message]);
+  sql.close();
 });

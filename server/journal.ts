@@ -18,7 +18,7 @@ export class Journal {
         id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, request TEXT NOT NULL,
         created INTEGER NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL CHECK(status IN ('pending','complete','failed')),
-        context TEXT, UNIQUE(conversation,request)
+        UNIQUE(conversation,request)
       );
       CREATE TABLE IF NOT EXISTS attachments (
         conversation TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
@@ -30,7 +30,6 @@ export class Journal {
         until INTEGER NOT NULL, mime TEXT NOT NULL, UNIQUE(conversation,attachment)
       );
       CREATE INDEX IF NOT EXISTS local_expiry ON local_files(until);
-      CREATE INDEX IF NOT EXISTS recent_context ON turns(conversation,id) WHERE status='complete';
       UPDATE turns SET status='failed' WHERE status='pending';
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='attachment'").get()) {
@@ -44,6 +43,38 @@ export class Journal {
       CREATE INDEX IF NOT EXISTS turn_files_attachment ON turn_files(attachment);
       INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
     `);
+    this.initializeContext();
+  }
+
+  private initializeContext() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='active_context'").get()) {
+        this.db.exec(`
+          CREATE TABLE active_context (
+            sequence INTEGER PRIMARY KEY, conversation TEXT NOT NULL, messages TEXT NOT NULL, files TEXT
+          );
+          CREATE INDEX context_order ON active_context(conversation,sequence);
+          CREATE INDEX context_files ON active_context(conversation,sequence) WHERE files IS NOT NULL;
+        `);
+        // Import the previous format once. An empty working context is valid after this point.
+        if (this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='context'").get()) {
+          this.db.exec(`
+            INSERT INTO active_context(conversation,messages,files)
+            SELECT t.conversation,t.context,
+              CASE WHEN t.attachment IS NOT NULL THEN
+                (SELECT json_group_array(f.attachment ORDER BY f.position) FROM turn_files f WHERE f.turn_id=t.id)
+              END
+            FROM turns t WHERE t.status='complete' AND json_valid(t.context) AND json_type(t.context)='array'
+            ORDER BY t.id
+          `);
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   attachment(conversation: string, id: string) {
@@ -79,15 +110,20 @@ export class Journal {
       JOIN attachments a ON a.conversation=t.conversation AND a.id=f.attachment
       WHERE f.turn_id=? ORDER BY f.position`).all(turn) as unknown as Attachment[];
   }
-  latestFiles(conversation: string) {
-    const turn = this.db.prepare(`SELECT id FROM turns WHERE conversation=? AND status='complete'
-      AND attachment IS NOT NULL ORDER BY id DESC LIMIT 1`).get(conversation);
-    return turn ? this.turnFiles(Number(turn.id)) : [];
+  contextFiles(conversation: string): (Attachment | undefined)[] {
+    const row = this.db.prepare(`SELECT files FROM active_context WHERE conversation=? AND files IS NOT NULL
+      ORDER BY sequence DESC LIMIT 1`).get(conversation);
+    const ids: string[] = row ? JSON.parse(String(row.files)) : [];
+    return ids.map(id => this.attachment(conversation,id));
   }
 
-  previous(conversation: string): AgentMessage[] {
-    return this.db.prepare("SELECT context FROM turns WHERE conversation=? AND status='complete' ORDER BY id DESC LIMIT 12")
-      .all(conversation).reverse().flatMap(row => JSON.parse(String(row.context)));
+  contextMessages(conversation: string): AgentMessage[] {
+    const messages: AgentMessage[] = [];
+    const rows = this.db.prepare("SELECT messages FROM active_context WHERE conversation=? ORDER BY sequence");
+    for (const row of rows.iterate(conversation)) {
+      for (const message of JSON.parse(String(row.messages))) messages.push(message);
+    }
+    return messages;
   }
   lookup(conversation: string, request: string) {
     return this.db.prepare("SELECT id,question,answer,status,attachment FROM turns WHERE conversation=? AND request=?").get(conversation,request);
@@ -106,8 +142,19 @@ export class Journal {
       throw error;
     }
   }
-  complete(id: number | bigint, answer: string, pair: AgentMessage[]) {
-    this.db.prepare("UPDATE turns SET answer=?,context=?,status='complete' WHERE id=?").run(answer,JSON.stringify(pair),id);
+  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = []) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const turn = this.db.prepare("UPDATE turns SET answer=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
+        .get(answer,id);
+      if (!turn) throw new Error("Turn is no longer pending");
+      this.db.prepare("INSERT INTO active_context(conversation,messages,files) VALUES(?,?,?)")
+        .run(turn.conversation,JSON.stringify(messages),files.length ? JSON.stringify(files) : null);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
   fail(id: number | bigint, partial: string) {
     this.db.prepare("UPDATE turns SET status='failed',answer=? WHERE id=? AND status='pending'").run(partial,id);
