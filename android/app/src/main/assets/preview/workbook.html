@@ -1,0 +1,8 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'">
+<style>
+*{box-sizing:border-box}body{margin:0;font:15px Roboto,sans-serif;color:#302a36;background:#faf9fc;height:100vh;display:flex;flex-direction:column}nav,footer{display:flex;align-items:center;gap:10px;padding:8px 14px}select,button{font:inherit;color:#654880;background:white;border:1px solid #ddd4e5;border-radius:10px;min-height:42px;padding:4px 10px}button:disabled{opacity:.35}select{min-width:0;max-width:100%}main{overflow:auto;flex:1;background:white}table{border-collapse:separate;border-spacing:0}td,th{min-width:84px;max-width:360px;padding:7px 10px;white-space:pre-wrap;overflow-wrap:anywhere;border:solid #e9e5ed;border-width:0 1px 1px 0;text-align:left}th{background:#f1edf5;color:#655871}thead{position:sticky;top:0;z-index:2}th:first-child{position:sticky;left:0;min-width:42px}footer{justify-content:space-between;flex-wrap:wrap}#status{padding:12px;margin:0}#status:empty{display:none}
+</style>
+<nav><select id="sheets" aria-label="工作表"></select></nav><p id="status" role="status">正在读取表格…</p><main><table id="grid"></table></main>
+<footer><button id="prev">上一组</button><span id="range"></span><button id="next">下一组</button></footer>
+<script src="xlsx.full.min.js"></script><script src="workbook.js"></script></html>

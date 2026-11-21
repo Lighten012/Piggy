@@ -41,16 +41,6 @@ internal object ImagePreviews {
             .diskCacheStrategy(DiskCacheStrategy.NONE).into(view)
     }
 
-    fun enlarge(view: ImageView, original: Uri, thumbnail: Uri?, name: String) {
-        val glide = Glide.with(view)
-        val screen = view.resources.displayMetrics
-        val request = glide.asBitmap().fitCenter().override(screen.widthPixels, screen.heightPixels)
-            .diskCacheStrategy(DiskCacheStrategy.NONE)
-        view.contentDescription = "图片，$name"
-        request.clone().load(original).error(request.clone().load(thumbnail)
-            .error(android.R.drawable.ic_menu_gallery)).into(view)
-    }
-
     // Generate the bounded local history thumbnail off the UI thread.
     fun save(context: Context, attachment: JSONObject) {
         val uri = source(attachment) ?: return

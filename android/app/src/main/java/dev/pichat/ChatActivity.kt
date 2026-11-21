@@ -3,10 +3,7 @@ package dev.pichat
 import android.app.Dialog
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ActivityNotFoundException
-import android.content.ClipData
 import android.net.Uri
-import android.webkit.MimeTypeMap
 import org.json.JSONObject
 import android.content.Intent
 import android.text.Spanned
@@ -53,7 +50,6 @@ class ChatActivity : Activity() {
     private lateinit var contextMeter: ContextMeter
     private var readingContext = false
     private var versionCurrent = false
-    private var saveTarget: JSONObject? = null
     private var selecting = false
     private var generating = false
     private var promptedVersion: String? = null
@@ -93,7 +89,6 @@ class ChatActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
-        saveTarget = state?.getString("saveReplyFile")?.let(::JSONObject)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = true
@@ -355,69 +350,12 @@ class ChatActivity : Activity() {
     private fun expired(file: JSONObject) =
         file.has("until") && file.optLong("until") <= System.currentTimeMillis()
 
-    private fun saveReply(file: JSONObject) {
-        saveTarget = file
-        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = file.getString("mime")
-            putExtra(Intent.EXTRA_TITLE, file.getString("name"))
-        }, 303)
-    }
-
-    override fun onSaveInstanceState(state: Bundle) {
-        super.onSaveInstanceState(state)
-        saveTarget?.let { state.putString("saveReplyFile", it.toString()) }
-    }
-
     private fun openFile(file: JSONObject) {
         if (expired(file)) {
             Toast.makeText(this, "附件已过期", Toast.LENGTH_SHORT).show()
             return
         }
-        val name = file.getString("name")
-        val uri = Uri.parse(file.getString("uri"))
-        val image = ImagePreviews.source(file)
-        if (image != null) {
-            val preview = previewView()
-            val dialog = AlertDialog.Builder(this).setTitle(name).setView(preview)
-                .setPositiveButton("关闭", null).apply {
-                    if (file.has("key")) setNeutralButton("保存到手机") { _, _ -> saveReply(file) }
-                }.show()
-            ImagePreviews.enlarge(preview, image, ImagePreviews.saved(this, file.optString("id")), name)
-            dialog.setOnDismissListener { ImagePreviews.display(preview, null, "") }
-            return
-        }
-        if (file.has("key")) {
-            AlertDialog.Builder(this).setTitle(name).setItems(arrayOf("用其他应用打开", "保存到手机")) { _, choice ->
-                if (choice == 1) saveReply(file)
-                else client.fetchReply(file, null) { local, error ->
-                    if (local != null) viewDocument(local, name, file.getString("mime"))
-                    else Toast.makeText(this, error, Toast.LENGTH_LONG).show()
-                }
-            }.show()
-            return
-        }
-        viewDocument(uri, name, file.optString("mime"))
-    }
-
-    private fun viewDocument(uri: Uri, name: String, contentType: String) {
-        var mime = contentType
-        if (mime.isBlank() || mime == "application/octet-stream") {
-            mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
-                ?: "application/octet-stream"
-        }
-        try {
-            // Detect removed documents here so the user gets a useful message in Piggy.
-            contentResolver.openFileDescriptor(uri, "r")?.close()
-            startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).apply {
-                clipData = ClipData.newRawUri(name, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            })
-        } catch (_: ActivityNotFoundException) {
-            Toast.makeText(this, "手机上没有可打开此类文件的应用", Toast.LENGTH_LONG).show()
-        } catch (_: Exception) {
-            Toast.makeText(this, "无法打开本地文件，请重新选择", Toast.LENGTH_LONG).show()
-        }
+        startActivity(Intent(this, PreviewActivity::class.java).putExtra("file", file.toString()))
     }
 
     private fun previewView() = ImageView(this).apply {
@@ -496,16 +434,6 @@ class ChatActivity : Activity() {
     @Deprecated("Activity result callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 303) {
-            val file = saveTarget
-            saveTarget = null
-            val target = data?.data
-            if (resultCode == RESULT_OK && file != null && target != null) {
-                client.fetchReply(file, target) { _, error ->
-                    Toast.makeText(this, error ?: "文件已保存", Toast.LENGTH_LONG).show()
-                }
-            }
-        }
         if (requestCode == 302 && resultCode == RESULT_OK) {
             val clip = data?.clipData
             val uris = if (clip != null) (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }

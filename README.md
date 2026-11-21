@@ -28,13 +28,19 @@ cd android
 
 ### 助手回复的附件
 
-可以让 Piggy 画图，或生成可下载的 Excel、PowerPoint 等文件。服务端调用 OpenAI 的图片生成或代码解释器工具，取回成品，保存在与用户上传件相同的私有目录。SQLite 保存回复与文件之间的关联、文件名、类型、大小及到期时间。手机可以点图放大、保存到手机，也可以用其他应用打开文档。登录后的网页可以查看和下载。七天后服务器停止提供下载并清理文件，聊天里仍保留文件名。用户主动另存的副本由用户自行管理。
+可以让 Piggy 画图，或生成可下载的 Excel、PowerPoint 等文件。服务端调用 OpenAI 的图片生成或代码解释器工具，取回成品，保存在与用户上传件相同的私有目录。SQLite 保存回复与文件之间的关联、文件名、类型、大小及到期时间。手机点附件进入只读预览页，右上角可以另存原件或用其他应用打开。登录后的网页可以查看和下载。七天后服务器停止提供下载并清理文件，聊天里仍保留文件名。用户主动另存的副本由用户自行管理。
 
 ### 聊天附件
 
-输入框左侧的「＋」打开 Android 系统文件选择器，每条消息最多可混合选择 4 个文件，每个不超过 10 MiB。选中的附件显示在输入框内，可分别移除；点击发送立即移入消息，失败时恢复为草稿。可以单独发送文件。手机可在选择和发送图片后查看缩略图；点图片可放大。发送成功后，本机最近 40 轮的图片保留缩略图，其他附件可点文件名调用手机里的应用打开原文件。手机保留所选文件的读取权限直到发送成功或移除，失败后可以重试。手机和服务端共用随版本发布的附件格式清单（Android assets 中的 attachment-types.json）。可添加 JPEG、PNG、WebP、静态 GIF、PDF、Office 文档、表格、演示、文本和代码。手机会在上传前提示不支持的文件；多选时保留其余合规文件。
+输入框左侧的「＋」打开 Android 系统文件选择器，每条消息最多可混合选择 4 个文件，每个不超过 10 MiB。选中的附件显示在输入框内，可分别移除；点击发送立即移入消息，失败时恢复为草稿。可以单独发送文件。手机可在选择和发送图片后查看缩略图；点图片可放大。发送成功后，本机最近 40 轮的图片保留缩略图，其他附件点文件名进入同一预览页。手机保留所选文件的读取权限直到发送成功或移除，失败后可以重试。手机和服务端共用随版本发布的附件格式清单（Android assets 中的 attachment-types.json）。可添加 JPEG、PNG、WebP、静态 GIF、PDF、Office 文档、表格、演示、文本和代码。手机会在上传前提示不支持的文件；多选时保留其余合规文件。
 
 Go 将匿名、带版本号的 `POST /mobile/attachments` 流式转给 Pi。Pi 流式接收文件，上传至 OpenAI Files 后，在 SQLite 所在目录的私有 attachments/ 子目录保留原件七天，并将文件编号、名称、大小、所属对话和过期时间写入 SQLite。迁移时应同时迁移该目录和数据库。OpenAI 文件保留七天。附件和针对最近一组成功发送的附件的追问使用 Responses API，图片按图片输入，其他文件按文档输入。登录管理页可下载原件，图片、PDF 和纯文本类附件还可直接查看。到期后原链接立即失效，后台在启动时及每分钟清理过期原件，聊天记录保留文件名和大小。迁移 Nginx 时一并部署示例配置中的附件 location；普通聊天仍限 32 KiB。
+
+### Android 附件预览
+
+输入框中的附件、已发送文件和 Piggy 的回复附件共用预览页。图片支持缩放，Markdown 按格式阅读，文本和代码按原文阅读。PDF 支持翻页及双指或双击缩放。CSV、TSV、XLS、XLSX 通过 APK 内置的 SheetJS CE 0.20.3 离线读取，可切换工作表并横向滚动；预览显示文件中保存的单元格值。SheetJS 发行源为 `https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js`，许可证随 APK 打包。
+
+打开 DOC、DOCX、PPT、PPTX、ODT、ODP、RTF 时，手机按需将文件传到本机配置的 Piggy CVM。隔离的 LibreOffice 实例把文件排版为静态 PDF，返回后清理临时目录。手机缓存该预览最多七天，回复附件同时受原到期时间限制。转换不调用 OpenAI。预览输入上限 32 MiB，已加密或无法解析的文件会显示提示，并保留原件操作。
 
 ## CVM 部署
 
@@ -47,7 +53,7 @@ Go 将匿名、带版本号的 `POST /mobile/attachments` 流式转给 Pi。Pi �
 | PIGGY_ADMIN_PASSWORD | 网页账号 piggy 的独立密码 |
 | PIGGY_WORKER_TOKEN | Go 与 Pi 之间的随机内部密钥 |
 
-安装发布目录内的两个 systemd 单元，执行 `systemctl daemon-reload`、`systemctl enable --now piggy-pi piggy-admin`。已有服务切换版本后重启两个单元。按 `server/admin/nginx.conf.example` 配置本站证书和 HTTPS 8888。Go 不接收模型密钥，Pi 不接收网页密码。
+Debian 预览主机安装 `apt-get install --no-install-recommends libreoffice-writer libreoffice-impress libreoffice-calc fonts-wqy-zenhei`。安装发布目录内三个 systemd 单元，执行 `systemctl daemon-reload`、`systemctl enable --now piggy-preview piggy-pi piggy-admin`。切换版本后重启对应单元。Office 服务通过 Unix socket 接收转换任务，单次处理一份，使用私有网络与临时目录，内存上限 384 MiB。Nginx 需要包含示例中的 `/mobile/preview` location。按 `server/admin/nginx.conf.example` 配置本站证书和 HTTPS 8888。Go 不接收模型密钥，Pi 不接收网页密码。
 
 Pi 的 systemd 日志记录手机模型调用结果、耗时和 token 用量。可通过 `journalctl -u piggy-pi` 查看。
 

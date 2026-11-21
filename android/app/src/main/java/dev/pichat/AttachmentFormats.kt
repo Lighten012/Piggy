@@ -16,6 +16,13 @@ internal class AttachmentFormats(private val context: Context) {
         MimeTypeMap.getSingleton().getMimeTypeFromExtension(it)
     }.filterNot { it.startsWith("video/") || it.startsWith("audio/") } + "application/octet-stream").distinct().toTypedArray()
 
+    fun isTextFile(name: String, mime: String): Boolean {
+        val type = byExtension[name.substringAfterLast('.').lowercase()] ?: mime
+        return type.startsWith("text/") || type == "message/rfc822" ||
+            (types.has(type) && type.startsWith("application/") &&
+                !type.startsWith("application/vnd.") && type !in setOf("application/pdf", "application/rtf", "application/msword"))
+    }
+
     fun validate(name: String, reported: String?, uri: Uri): String {
         val mime = reported.orEmpty().substringBefore(';').trim().lowercase()
         val lower = name.trim().lowercase()

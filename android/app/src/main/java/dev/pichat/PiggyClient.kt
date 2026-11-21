@@ -266,7 +266,17 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             ?.forEach { it.deleteRecursively() }
     }
 
-    init { downloads.execute(::pruneDownloads) }
+    init {
+        downloads.execute {
+            pruneDownloads()
+            val now = System.currentTimeMillis()
+            java.io.File(activity.cacheDir, "office-previews").listFiles()
+                ?.filter { it.lastModified() <= now }?.forEach { it.delete() }
+            activity.cacheDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("reader-") &&
+                it.name.endsWith(".tmp") && it.lastModified() < now - 7L * 86400000 }
+                ?.forEach { it.deleteRecursively() }
+        }
+    }
 
     fun fetchReply(file: JSONObject, target: Uri?, finished: (Uri?, String?) -> Unit) = downloads.execute {
         val result = runCatching {
