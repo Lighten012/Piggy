@@ -9,6 +9,7 @@ import android.net.Uri
 import android.webkit.MimeTypeMap
 import org.json.JSONObject
 import android.content.Intent
+import android.text.Spanned
 import android.text.TextUtils
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -24,6 +25,8 @@ import android.widget.*
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import io.noties.markwon.ext.tables.TableAwareMovementMethod
+import io.noties.markwon.ext.tables.TableRowSpan
 
 class ChatActivity : Activity() {
     private val markdown by lazy { chatMarkdown(this) }
@@ -577,17 +580,26 @@ class ChatActivity : Activity() {
         }
         val view = text("", 16f, ink).apply {
             setTextIsSelectable(true)
-            movementMethod = android.text.method.LinkMovementMethod.getInstance()
+            movementMethod = TableAwareMovementMethod.create()
             setLinkTextColor(plum)
             setPadding(dp(17), dp(13), dp(17), dp(13))
             setLineSpacing(dp(2).toFloat(), 1f)
             if (files.isEmpty()) background = shape(if (user) lavender else Color.WHITE, 20, !user)
             maxWidth = (resources.displayMetrics.widthPixels * .81f).toInt()
         }
-        if (value.isNotEmpty()) markdown.setMarkdown(view, value)
+        if (value.isNotEmpty()) renderMessage(view, value)
         if (files.isEmpty() || value.isNotEmpty()) group.addView(view, if (files.isEmpty()) wrap else match, wrap)
         transcript.addView(row, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(15) })
         return view
+    }
+
+    private fun renderMessage(view: TextView, source: String) {
+        markdown.setMarkdown(view, source)
+        val content = view.text as? Spanned
+        // Table rows draw their own cells and need the bubble width even when the prose is short.
+        val hasTable = content != null && content.getSpans(0, content.length, TableRowSpan::class.java).isNotEmpty()
+        val minimum = if (hasTable) view.maxWidth else 0
+        if (view.minWidth != minimum) view.minWidth = minimum
     }
 
     private fun toBottom() = scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
@@ -621,7 +633,7 @@ class ChatActivity : Activity() {
         val render = Runnable {
             scheduled = false
             val follow = !scroll.canScrollVertically(1)
-            markdown.setMarkdown(reply, source.toString())
+            renderMessage(reply, source.toString())
             if (follow) toBottom()
         }
         client.send(message, draft, uploaded = { reply.hint = "正在回复…" }, measured = contextMeter::update, delta = { part ->
