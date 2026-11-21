@@ -7,9 +7,11 @@
 | 环境 | 服务端部署提交 | Android 发布版本 | 运行情况 |
 |---|---|---|---|
 | 正式 · 8888 | [fd89327](https://github.com/Lighten012/Piggy/commit/fd89327b43d92f31ae4076bb27a001c2cce6fb31) | `0.13.0`，versionCode 24 | Go、Pi 均在运行 |
-| 测试 · 8889 | [ecf953a](https://github.com/Lighten012/Piggy/commit/ecf953a25f3aaca16990be72f2d23126a81d952c) | `0.13.1-test.1`，versionCode 30 | Go、Pi 均在运行 |
+| 测试 · 8889 | [ecf953a](https://github.com/Lighten012/Piggy/commit/ecf953a25f3aaca16990be72f2d23126a81d952c) | `0.13.1-test.2`，versionCode 31 | Go、Pi 均在运行 |
 
 ## 已交付及验收范围
+
+- **测试版后台电池设置快捷入口。** [Android 改动](https://github.com/Lighten012/Piggy/commit/7ae3e101a4b0463ccf351f862bdb57670e2ef0b6)。Android 14 模拟器从侧边栏直接进入当前应用的系统电池页面，选择「不受限制」后核对系统豁免列表，并恢复原选项。四种测试 APK 均已通过公网下载校验，ARM64 从 test.1 原地更新并进入聊天。OPPO、vivo 实机的系统菜单仍待验证。
 
 - **测试版附件交付和后台发送。** 在隔离数据库中用真实模型读取合成图片并追问无关问题，两轮回复附件数均为零。再要求生成 Excel，成功下载 1 个 XLSX，并从工作簿中核对了单元格内容。Android 14 模拟器验证切到桌面后断流、收到“生成中”、按原编号取回完整回复，页面上只出现一次。另验证切出即销毁页面、进程被停止后重新打开。服务端回归检查手机断线后的生成次数与落库结果。四种测试包已发布，ARM64 从 test.6 通过应用内更新安装。
 
