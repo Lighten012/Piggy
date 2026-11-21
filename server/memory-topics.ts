@@ -40,9 +40,6 @@ export class MemoryTopics {
   deferLegacy(conversation:string) {
     this.db.prepare("INSERT OR REPLACE INTO memory_import_retry VALUES(?,?)").run(conversation,Date.now()+60000);
   }
-  sourceQuestion(source:Evidence) {
-    return this.db.prepare("SELECT question FROM turns WHERE conversation=? AND id=?").get(source.conversation,source.turn)?.question as string|undefined;
-  }
   catalog(conversation:string) {
     return this.db.prepare("SELECT id AS topicId,subject,label,revision FROM memory_topics WHERE conversation=? ORDER BY id")
       .all(conversation);

@@ -48,7 +48,7 @@ test("records accepted mobile turns and restores context after restart", async t
         const {question} = JSON.parse(payload.input);
         res.writeHead(200,{"content-type":"application/json"});
         const allowed = question === "请记住：只喝温水" || question === "帮我记一下刚才那条";
-        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({decision:allowed?"save":"decline",...(payload.text.format.name==="memory_route" ? {groups:[{subject:"王子怡",label:"饮水习惯"}]} : {edits:[{subject:"王子怡",label:"饮水习惯",key:"水温",value:"只喝温水",action:"set"}]})})}]}]}));
+        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({decision:allowed?"save":"decline",facts:[{subject:"王子怡",label:"饮水习惯",key:"水温",value:"只喝温水",span:"只喝温水",action:"set"}]})}]}]}));
         return;
       }
       summaries.push(payload.input);

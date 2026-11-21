@@ -61,7 +61,7 @@ async function syncMemories() {
     const legacy=journal.topics.nextLegacy(undefined,true);
     if (legacy) {
       try {
-        await organize(journal.topics,legacy,journal.topics.sourceQuestion(legacy)??legacy.quote,undefined,resolveModel(activeSettings(),baseUrl),apiKey!);
+        await organize(journal.topics,legacy,legacy.quote,undefined,resolveModel(activeSettings(),baseUrl),apiKey!);
       } catch (error) {
         journal.topics.deferLegacy(legacy.conversation);
         const reason=error instanceof MemoryPlanError ? error.reason : error instanceof Error ? error.name : "unknown";

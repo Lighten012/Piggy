@@ -136,3 +136,33 @@ test("legacy schema cleanup preserves old source and remote IDs across restarts"
     assert.equal(db.prepare("SELECT 1 FROM sqlite_schema WHERE name GLOB 'memory_terms*'").get(),undefined);
   }
 });
+
+test("old members cannot supply a new fact or silently change its source",async t=>{
+  const {organize}=await import("./memory-planner.ts");
+  const j=new Journal(":memory:"), topics=j.topics;
+  const first=Number(j.begin("a","1","记住我喜欢草莓"));
+  topics.apply({conversation:"a",turn:first,quote:"我喜欢草莓"},[set("草莓")],[]);
+  j.complete(first,"好",[]);
+  const quote="我也喜欢香蕉", question="记住"+quote;
+  const source={conversation:"a",turn:Number(j.begin("a","2",question)),quote};
+  let wrongValue=true, wrongMatch=false;
+  t.mock.method(globalThis,"fetch",async (_url:unknown,init:RequestInit)=>{
+    const body=JSON.parse(String(init.body)), stage=body.text.format.name;
+    const data=JSON.parse(body.input);
+    let plan;
+    if (stage==="memory_extract") {
+      assert.deepEqual(data.主题名称目录,[fruit]);
+      plan={decision:"save",facts:[{...set(wrongValue?"草莓":"香蕉"),span:"香蕉"}]};
+    } else if (stage==="memory_match") plan={decision:"save",key:wrongMatch?"草莓":""};
+    else {assert.equal(stage,"memory_review");plan={decision:"clarify"};}
+    return Response.json({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify(plan)}]}]});
+  });
+  const model={id:"fixture",baseUrl:"https://fixture.invalid",reasoning:false} as Parameters<typeof organize>[4];
+  const run=()=>organize(topics,source,question,undefined,model,"test");
+  await assert.rejects(run(),/确认/);
+  wrongValue=false;wrongMatch=true;
+  await assert.rejects(run(),/确认/);
+  assert.equal(topics.page("a",1).entries[0].turnId,first);
+  wrongMatch=false;await run();
+  assert.deepEqual(topics.page("a",1).entries.map(m=>[m.value,m.turnId]),[["草莓",first],["香蕉",source.turn]]);
+});
