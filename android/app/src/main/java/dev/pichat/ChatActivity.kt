@@ -294,7 +294,7 @@ class ChatActivity : Activity() {
             setOnClickListener { dialog.dismiss() }
         }
         panel.addView(current, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(26) })
-        val power = text("后台发送设置", 16f, ink).apply {
+        val power = text("允许后台运行", 16f, ink).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), 0, dp(12), 0)
             setCompoundDrawablesWithIntrinsicBounds(R.drawable.nav_battery, 0, 0, 0)
@@ -303,7 +303,7 @@ class ChatActivity : Activity() {
             isFocusable = true
             setOnClickListener {
                 dialog.dismiss()
-                BackgroundSettingsDialog().show(fragmentManager, "background-settings")
+                openBackgroundPowerSettings()
             }
         }
         panel.addView(power, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(6) })
