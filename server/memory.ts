@@ -10,7 +10,7 @@ const offsetParameter = {type:"integer",minimum:0,description:"续读时传入�
 
 export const searchMemoryDeclaration = {
   name:"search_memory",
-  description:"用自然语言按意思查找本会话明确保存的记忆，返回相关原文。",
+  description:"用完整问题查找本会话已保存的记忆。返回语义相关的原文、memoryId 和索引状态。回答时核对原文中的人物和否定。",
   parameters:{type:"object",properties:{query:{type:"string",minLength:1,maxLength:4000,description:"直接表达想找的内容，可使用用户的原问题。"}},
     required:["query"],additionalProperties:false},
 } as const;
@@ -48,7 +48,7 @@ export function memoryReadTools(journal:Journal, index:MemoryIndex, conversation
 
 export const saveMemoryDeclaration = {
   name:"save_memory",
-  description:"将用户在本轮明确要求记下的文字保存到本会话的长期记忆。",
+  description:"保存用户本轮明确要求记住的原文，并为它建立语义索引。返回保存和索引的处理结果。",
   parameters:{type:"object",properties:{text:{type:"string",description:"逐字摘取要保存的内容，包含原有的限定条件。"}},
     required:["text"],additionalProperties:false},
 } as const;

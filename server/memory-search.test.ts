@@ -76,3 +76,33 @@ test("historical context remains scoped, paged and readable beyond a long excerp
   const tail=journal.readChatContext("a",current,"turn",Number(first),excerpt.nextOffset).turns[0];
   assert.equal(excerpt.answer+tail.answer,long);
 });
+
+test("clean an already indexed vector database without resetting its remote references", t => {
+  const dir=mkdtempSync(join(tmpdir(),"piggy-old-columns-"));
+  const path=join(dir,"chat.sqlite"), db=new DatabaseSync(path);
+  t.after(()=>{db.close();rmSync(dir,{force:true,recursive:true});});
+  const journal=new Journal(path);
+  const turn=journal.begin("phone","request","请记住草莓。");
+  const id=journal.saveMemory(turn,"草莓");
+  journal.complete(turn,"已保存",[]);
+  db.exec(`
+    ALTER TABLE memories ADD COLUMN keywords TEXT;
+    ALTER TABLE memories ADD COLUMN categories TEXT;
+    CREATE VIRTUAL TABLE memory_terms USING fts5(keywords,categories);
+    CREATE TRIGGER memory_terms_update AFTER UPDATE OF keywords,categories ON memories BEGIN
+      INSERT INTO memory_terms(rowid,keywords,categories) VALUES(new.id,new.keywords,new.categories);
+    END;
+    UPDATE memories SET keywords='草莓',categories='水果',vector_file='file_test',indexed=1;
+    INSERT INTO memory_stores VALUES('phone','test','vs_test');
+  `);
+  const select="SELECT id,conversation,turn_id,created,content,vector_file,indexed,retry_after FROM memories";
+  const before=db.prepare(select).all();
+  for (let restart=0; restart<2; restart++) {
+    const reopened=new Journal(path);
+    assert.deepEqual(db.prepare("PRAGMA table_info(memories)").all().map(r=>r.name),Object.keys(before[0]));
+    assert.deepEqual(db.prepare(select).all(),before);
+    assert.equal(db.prepare("SELECT remote FROM memory_stores WHERE conversation='phone'").get()?.remote,"vs_test");
+    assert.equal(db.prepare("SELECT name FROM sqlite_schema WHERE name GLOB 'memory_terms*'").get(),undefined);
+    assert.equal(reopened.readChatContext("phone",99,"memory",id).anchorTurnId,Number(turn));
+  }
+});

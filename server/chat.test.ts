@@ -56,7 +56,11 @@ test("records accepted mobile turns and restores context after restart", async t
     const changed = payload.input.some(i => JSON.stringify(i.content ?? "").includes("settings-probe"));
     assert.equal(payload.model, changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
-    assert.ok(payload.tools.some((tool:{name?:string}) => tool.name === "save_memory"));
+    for (const [name,argument] of [["save_memory","text"],["search_memory","query"]]) {
+      const tool = payload.tools.find((entry:{name?:string}) => entry.name === name);
+      assert.deepEqual(Object.keys(tool.parameters.properties),[argument]);
+      assert.deepEqual(tool.parameters.required,[argument]);
+    }
     fileInputs.push(payload.input.flatMap((item: {content?:{file_id?:string}[]}) =>
       Array.isArray(item.content) ? item.content.flatMap(part => part.file_id ? [part.file_id] : []) : []));
     const users = payload.input.filter((item: {role?:string}) => item.role === "user")

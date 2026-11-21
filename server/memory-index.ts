@@ -20,11 +20,17 @@ export class MemoryIndex {
   static migrate(db:DatabaseSync) {
     db.exec("BEGIN IMMEDIATE");
     try {
-      if (!db.prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name='vector_file'").get()) {
+      const columns = new Set(db.prepare("PRAGMA table_info(memories)").all().map(row => row.name));
+      db.exec(`
+        DROP TRIGGER IF EXISTS memory_terms_insert;
+        DROP TRIGGER IF EXISTS memory_terms_update;
+        DROP TRIGGER IF EXISTS memory_terms_delete;
+        DROP TABLE IF EXISTS memory_terms;
+      `);
+      if (columns.has("keywords")) db.exec("ALTER TABLE memories DROP COLUMN keywords");
+      if (columns.has("categories")) db.exec("ALTER TABLE memories DROP COLUMN categories");
+      if (!columns.has("vector_file")) {
         db.exec(`
-          DROP TRIGGER IF EXISTS memory_terms_insert;
-          DROP TRIGGER IF EXISTS memory_terms_update;
-          DROP TRIGGER IF EXISTS memory_terms_delete;
           ALTER TABLE memories ADD COLUMN vector_file TEXT;
           ALTER TABLE memories ADD COLUMN indexed INTEGER NOT NULL DEFAULT 0;
           ALTER TABLE memories ADD COLUMN retry_after INTEGER NOT NULL DEFAULT 0;
