@@ -7,9 +7,11 @@
 | 环境 | 服务端部署提交 | Android 发布版本 | 运行情况 |
 |---|---|---|---|
 | 正式 · 8888 | [fd89327](https://github.com/Lighten012/Piggy/commit/fd89327b43d92f31ae4076bb27a001c2cce6fb31) | `0.13.0`，versionCode 24 | Go、Pi 均在运行 |
-| 测试 · 8889 | [ecf953a](https://github.com/Lighten012/Piggy/commit/ecf953a25f3aaca16990be72f2d23126a81d952c) | `0.13.1-test.3`，versionCode 32 | Go、Pi 均在运行 |
+| 测试 · 8889 | [ecf953a](https://github.com/Lighten012/Piggy/commit/ecf953a25f3aaca16990be72f2d23126a81d952c) | `0.13.1-test.4`，versionCode 33 | Go、Pi 均在运行 |
 
 ## 已交付及验收范围
+
+- **OPPO、vivo 后台高耗电。** 设置页按机型显示操作路径，优先打开可访问的厂商耗电管理页面。在 Android 14 模拟器的独立 QA 包中分别模拟 OPPO、vivo 品牌，验证了厂商组件缺失时进入系统电池页；原生 Android 路径则验证到了当前应用的「不受限制」选项。厂商专用页和开关效果尚待对应品牌真机验证。四种架构通过公网下载校验，ARM64 已从 test.3 应用内更新至 test.4。
 
 - **Android 设置页。** 侧边栏新增「设置」，「允许后台运行」移入其中。在 Android 14 模拟器验证了从设置进入当前应用的系统电池页、返回设置，再用页头返回按钮或系统返回键回到聊天。测试版四种架构的公网下载已核对，ARM64 从 test.2 应用内更新至 test.3。
 
