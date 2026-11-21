@@ -1,15 +1,23 @@
 # Piggy
 
-Android 在同一段对话中持续发送消息，由美国 CVM 上的 Pi Agent 生成流式回复。网页是手机对话的只读记录。浏览器登录后按时间查看提问、回复和失败状态，每三秒读取新增或刚完成的记录，支持向前翻页。
+Android 在同一段对话中持续发送消息，由美国 CVM 上的 Pi Agent 生成流式回复。网页管理端可以查阅手机对话，也可以调整本环境的模型设置。浏览器登录后按时间查看提问、回复和失败状态，每三秒读取新增或刚完成的记录，支持向前翻页。
+
+## 开发文档
+
+| 想了解什么 | 从哪里开始 |
+|---|---|
+| 正式和测试各跑哪个版本、已经验过什么、还有哪些限制 | [项目进展](docs/status.md) |
+| 一次改动如何从开发进入测试、何时发布正式版、如何维护文档 | [开发与发布约定](docs/development.md) |
+| 为什么部署两套服务、谁持有上下文、附件和更新怎样处理 | [技术决策记录](docs/decisions.md) |
+
+## 系统架构
 
 ```text
-手机 → HTTPS 8888 → Go → Pi → OpenAI
-                          ↕
-                       SQLite
-网页管理端 → Go → 经鉴权的历史查询、Agent 能力清单和模型设置
+Android → 固定 HTTPS 入口 → Go 网关 → Pi Agent → OpenAI
+网页管理端 → 同环境 Go 网关 → Pi Agent → SQLite 与附件目录
 ```
 
-服务端在调用模型前写入提问，结束时保存回复或失败状态。服务中断遗留的进行中记录在启动时标记失败。完整记录存储在 `/var/lib/piggy-journal/chat.sqlite`，使用 SQLite WAL，可跨发布和服务重启保留。只有登录后的网页可以读取完整记录。手机保留本次安装的对话编号和最近 40 轮成功问答，重新打开可继续。网页从 turns 表读取聊天原文。模型和圆环读取独立的 active_context 表，按顺序使用该对话的全部工作上下文。每轮成功后，原文和新增上下文在同一个事务中保存。首次升级时一次性导入已有成功轮次的上下文。聊天顶栏的圆环按 300,000 个输入 token 显示用量，点击可查看明细。服务端在每次生成前对实际 Responses 输入（含附件）调用 OpenAI 计数，超限或计数失败时保留草稿并提示。手机清除数据或重装后，网页仍保留服务器上的记录，手机的本地记录和对话编号会重置。
+服务端在调用模型前写入提问，结束时保存回复或失败状态。服务中断遗留的进行中记录在启动时标记失败。正式环境的完整记录存储在 `/var/lib/piggy-journal/chat.sqlite`，使用 SQLite WAL，可跨发布和服务重启保留。只有登录后的网页可以读取完整记录。手机保留本次安装的对话编号和最近 40 轮成功问答，重新打开可继续。网页从 turns 表读取聊天原文。模型和圆环读取独立的 active_context 表，按顺序使用该对话的全部工作上下文。每轮成功后，原文和新增上下文在同一个事务中保存。首次升级时一次性导入已有成功轮次的上下文。聊天顶栏的圆环按 300,000 个输入 token 显示用量，点击可查看明细。服务端在每次生成前对实际 Responses 输入（含附件）调用 OpenAI 计数，超限或计数失败时保留草稿并提示。手机清除数据或重装后，网页仍保留服务器上的记录，手机的本地记录和对话编号会重置。
 
 ## 正式环境与测试环境
 
@@ -21,7 +29,7 @@ Android 在同一段对话中持续发送消息，由美国 CVM 上的 Pi Agent 
 | 部署根目录 | /lighten012/projects/Piggy | /lighten012/projects/Piggy-staging |
 | SQLite 和七天附件目录 | /var/lib/piggy-journal | /var/lib/piggy-staging-journal |
 
-日常构建默认选择测试环境。测试版安装在独立的 Android 应用空间，聊天、文件预览、网页管理和应用内更新都使用 8889。测试 APK 下载地址为 `https://38.14.232.112:8889/updates/android/Piggy.apk`。每个环境的 Go 发布器只接受对应的 Android 包名。各环境分别校验自己的最新版本。
+日常构建默认选择测试环境。测试版安装在独立的 Android 应用空间，聊天、远端附件下载、网页管理和应用内更新都使用 8889。文档排版在手机上完成。测试 APK 下载地址为 `https://38.14.232.112:8889/updates/android/Piggy.apk`。每个环境的 Go 发布器只接受对应的 Android 包名。各环境分别校验自己的最新版本。
 
 开发时在新的空输出目录构建服务端，运行 `server/admin/build-release.sh /path/to/staging-release staging`。将产物放入测试根目录的 `releases/<revision>`，校验 `ENVIRONMENT` 和 `REVISION` 后切换该环境的 `current`。测试根目录使用自己的 `runtime/node`、`server.env`、管理员密码和内部令牌。安装生成的 `piggy-staging-pi.service` 和 `piggy-staging-admin.service`，使用对应的 Nginx 示例及主机现有的 TLS 证书。调用该目录下的 `current/piggy-admin publish-android` 发布测试 APK，默认写入测试根目录的 `updates/android`。独立设置 `PI_API_KEY` 可分开上游配额。
 
@@ -104,13 +112,13 @@ Go 网关原生提供三个公开只读地址，手机免登录。网页管理�
 python3 server/admin/prepare-android.py Piggy-signed.apk android-bundle --build-tools "$ANDROID_HOME/build-tools/36.0.0"
 ```
 
-将生成的 `android-bundle` 目录上传到服务器，再执行以下命令。发布命令串行校验版本、签名摘要和文件哈希，完整写入 APK 后原子切换版本清单，服务运行期间即可发布。
+将生成的 `android-bundle` 目录上传到目标环境，再调用该环境的发布器。以下示例用于日常测试发布。发布命令串行校验版本、签名摘要和文件哈希，完整写入 APK 后原子切换版本清单，服务运行期间即可发布。
 
 ```sh
-/lighten012/projects/Piggy/current/piggy-admin publish-android /path/to/android-bundle
+/lighten012/projects/Piggy-staging/current/piggy-admin publish-android /path/to/android-bundle
 ```
 
-版本清单和 APK 默认放在 `/lighten012/projects/Piggy/updates/android`，独立于服务端代码版本；可通过 `PIGGY_UPDATES_DIR` 调整，发布命令与 systemd 服务需使用同一目录。迁移时复制此目录及原有聊天数据、配置，部署相同网关并保留原发布签名。迁移时沿用固定公网地址和端口；如将来确需更改地址，需在原地址发布配置了新地址的签名 APK。
+版本清单和 APK 默认放在对应部署根目录的 `updates/android/`，独立于服务端代码版本；可通过 `PIGGY_UPDATES_DIR` 调整，发布命令与 systemd 服务需使用同一目录。迁移时复制此目录及原有聊天数据、配置，部署相同网关并保留原发布签名。迁移时沿用固定公网地址和端口；如将来确需更改地址，需在原地址发布配置了新地址的签名 APK。
 
 按 CPU 发布时，默认准备 arm64-v8a 的 bundle，并将其余三个同版本、同签名的 bundle 放在其 `variants/<abi>/` 子目录，然后执行一次 publish-android。带 `?abi=<abi>` 的更新清单返回对应架构，旧手机客户端首次使用默认包后会检查本机架构。
 
