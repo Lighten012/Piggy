@@ -18,7 +18,8 @@ export async function summarize(model: Model<"openai-responses">, key: string, t
     if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return [];
     const text = typeof message.content === "string" ? message.content :
       message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
-    return text ? [{role:message.role,text}] : [];
+    const filenames = message.fileRefs?.map(file=>file.name);
+    return text || filenames?.length ? [{role:message.role,text,...(filenames?.length ? {filenames} : {})}] : [];
   });
   const response = await fetch(model.baseUrl + "/responses", {
     method:"POST", headers:{authorization:"Bearer " + key,"content-type":"application/json"},

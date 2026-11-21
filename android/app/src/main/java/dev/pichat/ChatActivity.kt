@@ -14,6 +14,8 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.text.InputFilter
 import android.view.Gravity
 import android.view.View
@@ -240,7 +242,15 @@ class ChatActivity : Activity() {
             bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
             bubble(turn.getString("answer"), false, client.replyFiles(turn))
         }
+        client.restorePendingIfEmpty()
         input.setText(client.draft)
+        input.setSelection(input.length())
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) = client.saveDraft(s.toString())
+            override fun afterTextChanged(s: Editable?) {}
+        })
+        if (client.pendingSeparate) showPendingError("上一条消息尚未确认送达")
         showFile()
         updater.checkOnLaunch()
     }
@@ -309,7 +319,7 @@ class ChatActivity : Activity() {
     }
 
     private fun showFile() {
-        val files = if (generating) emptyList() else client.attachments
+        val files = if (generating || client.pendingSeparate) emptyList() else client.attachments
         fileRow.removeAllViews()
         fileStrip.visibility = if (files.isEmpty()) View.GONE else View.VISIBLE
         for (file in files) {
@@ -570,25 +580,48 @@ class ChatActivity : Activity() {
 
     private fun toBottom() = scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     private fun controls() {
-        val enabled = versionCurrent && !generating && !selecting
+        val enabled = versionCurrent && !generating && !selecting && !client.pendingSeparate
         attach.isEnabled = enabled
         send.isEnabled = enabled
         send.alpha = if (enabled) 1f else .55f
-        input.isEnabled = enabled
+        input.isEnabled = versionCurrent
     }
-    private fun submit() {
-        val draft = input.text.toString().trim()
+    private fun showPendingError(error: String) {
+        sendError.text = "$error · 点此处理上一条消息"
+        sendError.visibility = View.VISIBLE
+        sendError.setOnClickListener {
+            if (!client.pendingSeparate || generating || !versionCurrent) return@setOnClickListener
+            AlertDialog.Builder(this).setTitle("上一条消息")
+                .setMessage((listOf(client.pendingDraft) + client.attachments.map { it.optString("name") })
+                    .filter { it.isNotBlank() }.joinToString("\n"))
+                .setPositiveButton("重试") { _, _ -> submit(true) }
+                .setNegativeButton("放弃上一条") { _, _ ->
+                    client.dismissPending()
+                    sendError.visibility = View.GONE
+                    showFile()
+                    controls()
+                }.setNeutralButton("返回", null).show()
+        }
+    }
+
+    private fun submit(retry: Boolean = false) {
+        val draft = if (retry) client.pendingDraft else input.text.toString().trim()
         val files = client.attachments
         val message = draft.ifEmpty {
             when (files.size) { 0 -> ""; 1 -> "请帮我看看这个文件。"; else -> "请帮我看看这些文件。" }
         }
-        if (message.isEmpty() || !send.isEnabled) return
+        if (message.isEmpty() || generating || !versionCurrent || (!retry && !send.isEnabled)) return
+        if (!client.beginSend(message, draft, retry)) {
+            sendError.text = "无法在本机保存待发送消息"
+            sendError.visibility = View.VISIBLE
+            return
+        }
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         generating = true
         contextEpoch++
         controls()
         sendError.visibility = View.GONE
-        input.setText("")
+        if (!retry) input.setText("")
         showFile()
         val firstPendingRow = transcript.childCount
         bubble(draft, true, files)
@@ -623,8 +656,12 @@ class ChatActivity : Activity() {
                 if (firstPendingRow == 1) empty.visibility = View.VISIBLE
                 sendError.text = error
                 sendError.visibility = View.VISIBLE
-                input.setText(draft)
-                input.setSelection(input.length())
+                client.restorePendingIfEmpty()
+                if (client.pendingSeparate) showPendingError(error)
+                else {
+                    input.setText(client.draft)
+                    input.setSelection(input.length())
+                }
             }
             generating = false
             refreshContext()

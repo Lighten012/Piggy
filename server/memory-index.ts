@@ -27,6 +27,7 @@ export class MemoryIndex {
         DROP TRIGGER IF EXISTS memory_terms_delete;
         DROP TABLE IF EXISTS memory_terms;
       `);
+      if (!columns.has("superseded_by")) db.exec("ALTER TABLE memories ADD COLUMN superseded_by INTEGER REFERENCES memories(id)");
       if (columns.has("keywords")) db.exec("ALTER TABLE memories DROP COLUMN keywords");
       if (columns.has("categories")) db.exec("ALTER TABLE memories DROP COLUMN categories");
       if (!columns.has("vector_file")) {
@@ -117,20 +118,20 @@ export class MemoryIndex {
   }
 
   async syncNext() {
-    const row=this.db.prepare("SELECT id FROM memories WHERE indexed=0 AND retry_after<=? ORDER BY retry_after,id LIMIT 1").get(Date.now());
+    const row=this.db.prepare("SELECT id FROM memories WHERE superseded_by IS NULL AND indexed=0 AND retry_after<=? ORDER BY retry_after,id LIMIT 1").get(Date.now());
     if (row) await this.ensure(Number(row.id));
     return !!row;
   }
 
   async search(conversation:string, query:string, signal?:AbortSignal) {
     if (!query.trim()) throw new Error("请输入要查找的问题。");
-    const pending=!!this.db.prepare("SELECT 1 FROM memories WHERE conversation=? AND indexed=0 LIMIT 1").get(conversation);
+    const pending=!!this.db.prepare("SELECT 1 FROM memories WHERE conversation=? AND superseded_by IS NULL AND indexed=0 LIMIT 1").get(conversation);
     const store=this.db.prepare("SELECT remote FROM memory_stores WHERE conversation=?").get(conversation)?.remote;
     if (!store) return {candidates:[],indexingPending:pending};
     const response=await this.request("/vector_stores/"+encodeURIComponent(String(store))+"/search","POST",
       {query:query.trim(),max_num_results:20},undefined,signal);
     if (!Array.isArray(response?.data)) throw new Error("记忆检索返回格式异常。");
-    const lookup=this.db.prepare("SELECT id,created,content FROM memories WHERE conversation=? AND vector_file=?");
+    const lookup=this.db.prepare("SELECT id,created,content FROM memories WHERE conversation=? AND vector_file=? AND superseded_by IS NULL");
     const seen=new Set<string>();
     const candidates=[];
     for (const hit of response.data) {

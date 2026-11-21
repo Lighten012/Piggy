@@ -26,7 +26,35 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         prefs.edit().putString("session", it).commit()
     }
     val recent: JSONArray get() = JSONArray(prefs.getString("recent", "[]"))
-    val draft: String get() = prefs.getString("pendingDraft", prefs.getString("pendingText", "")).orEmpty()
+    val draft: String get() = prefs.getString("composer", prefs.getString("pendingDraft", "")).orEmpty()
+    val pendingDraft: String get() = prefs.getString("pendingDraft", "").orEmpty()
+    val pendingSeparate: Boolean get() = prefs.getBoolean("pendingSeparate", false)
+
+    fun saveDraft(value: String) {
+        prefs.edit().putString("composer", value).apply()
+    }
+
+    fun beginSend(text: String, draft: String, retry: Boolean): Boolean {
+        val id = prefs.getString("pendingId", null)?.takeIf { prefs.getString("pendingText", null) == text }
+            ?: UUID.randomUUID().toString()
+        val edit = prefs.edit().putString("pendingText", text).putString("pendingDraft", draft)
+            .putString("pendingId", id).putBoolean("pendingSeparate", true)
+        if (!retry) edit.putString("composer", "")
+        return edit.commit()
+    }
+
+    fun restorePendingIfEmpty() {
+        if (pendingSeparate && draft.isEmpty()) {
+            prefs.edit().putString("composer", pendingDraft).remove("pendingSeparate").commit()
+        }
+    }
+
+    fun dismissPending() {
+        val files = attachments
+        prefs.edit().remove("pendingText").remove("pendingDraft").remove("pendingId")
+            .remove("pendingSeparate").remove("file").remove("files").commit()
+        files.forEach(::releaseFile)
+    }
 
     val lastUsage: ContextUsage? get() {
         val used = prefs.getInt("contextUsed", -1)
@@ -196,9 +224,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
 
     fun send(text: String, draftText: String, uploaded: () -> Unit, measured: (ContextUsage) -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
         val failure = runCatching {
-            val previousId = prefs.getString("pendingId", null)
-            val id = if (prefs.getString("pendingText", null) == text && previousId != null) previousId else UUID.randomUUID().toString()
-            check(prefs.edit().putString("pendingText", text).putString("pendingDraft",draftText).putString("pendingId", id).commit()) { "无法保存待发送消息" }
+            val id = checkNotNull(prefs.getString("pendingId", null))
             val files = attachments
             // Check restored drafts from older releases before uploading any part of a group.
             for (file in files) {
@@ -258,7 +284,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                 saved.put(turn)
                 val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
                 check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
-                    .remove("pendingId").remove("pendingDraft").remove("file").remove("files").commit()) { "无法保存回复，请重试" }
+                    .remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("file").remove("files").commit()) { "无法保存回复，请重试" }
                 if (evicted != null) for (file in turnFiles(evicted)) {
                     ImagePreviews.discard(activity, file.getString("id"))
                     releaseFile(file)

@@ -56,6 +56,16 @@ test("index only saved originals, resume legacy and interrupted uploads and scop
   assert.deepEqual(journal.readChatContext("b",99,"memory",1).turns,[]);
   assert.equal(journal.searchChatHistory("a",99,["天气"]).matches.length,1);
   assert.equal(await index.syncNext(),false);
+  const changed=journal.begin("a","changed","请记住我最喜欢梨");
+  const pear=journal.saveMemory(changed,"我最喜欢梨",[1]);
+  assert.deepEqual((await index.search("a","水果")).candidates,[]);
+  journal.complete(changed,"好",[]);
+  const again=journal.begin("a","again","请记住我喜欢吃草莓");
+  assert.equal(journal.saveMemory(again,"我喜欢吃草莓",[pear]),1);
+  await index.ensure(1);
+  assert.deepEqual(uploads,["我喜欢吃草莓","我只喝茶"]);
+  assert.deepEqual((await index.search("a","水果")).candidates.map(c=>c.text),["我喜欢吃草莓"]);
+  assert.equal(journal.readChatContext("a",99,"memory",1).anchorTurnId,Number(again));
 });
 
 test("historical context remains scoped, paged and readable beyond a long excerpt", () => {
@@ -99,10 +109,33 @@ test("clean an already indexed vector database without resetting its remote refe
   const before=db.prepare(select).all();
   for (let restart=0; restart<2; restart++) {
     const reopened=new Journal(path);
-    assert.deepEqual(db.prepare("PRAGMA table_info(memories)").all().map(r=>r.name),Object.keys(before[0]));
+    assert.deepEqual(db.prepare("PRAGMA table_info(memories)").all().map(r=>r.name).sort(),[...Object.keys(before[0]),"superseded_by"].sort());
     assert.deepEqual(db.prepare(select).all(),before);
     assert.equal(db.prepare("SELECT remote FROM memory_stores WHERE conversation='phone'").get()?.remote,"vs_test");
     assert.equal(db.prepare("SELECT name FROM sqlite_schema WHERE name GLOB 'memory_terms*'").get(),undefined);
     assert.equal(reopened.readChatContext("phone",99,"memory",id).anchorTurnId,Number(turn));
   }
+});
+
+test("preference reversal reuses a memory ID and anchors the active memory to the latest request", () => {
+  const journal=new Journal(":memory:");
+  const save=(conversation:string,request:string,text:string,replaces:number[]=[])=>{
+    const turn=journal.begin(conversation,request,text);
+    const id=journal.saveMemory(turn,text,replaces);
+    assert.equal(journal.saveMemory(turn,text,replaces),id);
+    journal.complete(turn,"好",[]);
+    return {turn:Number(turn),id};
+  };
+  const first=save("a","1","咖啡加糖");
+  const other=save("a","2","妈妈咖啡无糖");
+  const dry=save("a","3","咖啡无糖",[first.id]);
+  const back=save("a","4","咖啡加糖",[dry.id]);
+  assert.equal(back.id,first.id);
+  assert.equal(journal.readChatContext("a",99,"memory",back.id).anchorTurnId,back.turn);
+  assert.equal(journal.readChatContext("a",99,"memory",other.id).anchorTurnId,other.turn);
+  const turn=journal.begin("b","5","咖啡无糖");
+  assert.throws(()=>journal.saveMemory(turn,"咖啡无糖",[back.id]),/有效记忆/);
+  const next=journal.begin("a","6","核对");
+  assert.throws(()=>journal.replacementSources(next,[dry.id]),/有效记忆/);
+  assert.deepEqual(journal.replacementSources(next,[back.id,other.id]),["咖啡加糖","妈妈咖啡无糖"]);
 });

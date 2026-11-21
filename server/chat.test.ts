@@ -23,7 +23,10 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.match(skillBody,/^## /);
   const histories: string[][] = [];
   const fileInputs: string[][] = [];
+  const fileGroups:string[][][]=[];
   const summaries:string[] = [];
+  let recallTurn=0;
+  const recalledInputs:unknown[]=[];
   let summaryUnavailable = false;
   let transientCounts = 0;
   let unavailableCounts = 0;
@@ -53,16 +56,18 @@ test("records accepted mobile turns and restores context after restart", async t
       res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:"保留蓝色偏好"}]}]}));
       return;
     }
+    for (const i of payload.input) if (i.type==="function_call_output" && Array.isArray(i.output)) recalledInputs.push(...i.output);
     const changed = payload.input.some(i => JSON.stringify(i.content ?? "").includes("settings-probe"));
     assert.equal(payload.model, changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
     for (const [name,argument] of [["save_memory","text"],["search_memory","query"]]) {
       const tool = payload.tools.find((entry:{name?:string}) => entry.name === name);
-      assert.deepEqual(Object.keys(tool.parameters.properties),[argument]);
+      assert.deepEqual(Object.keys(tool.parameters.properties),name==="save_memory" ? [argument,"replaces"] : [argument]);
       assert.deepEqual(tool.parameters.required,[argument]);
     }
     fileInputs.push(payload.input.flatMap((item: {content?:{file_id?:string}[]}) =>
       Array.isArray(item.content) ? item.content.flatMap(part => part.file_id ? [part.file_id] : []) : []));
+    fileGroups.push(payload.input.filter(i=>i.role==="user").map(i=>i.content.flatMap(p=>p.file_id ? [p.file_id] : [])));
     const users = payload.input.filter((item: {role?:string}) => item.role === "user")
       .map((item: {content:{text:string}[]}) => item.content.map(part => part.text).join(""));
     assert.ok(payload.input.some((item: {role?:string;content:unknown}) =>
@@ -92,10 +97,11 @@ test("records accepted mobile turns and restores context after restart", async t
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
-    if (["请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1))
+    if (["reopen archived file","请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1))
         && payload.input.at(-1).type !== "function_call_output") {
-      const item = {type:"function_call",name:"save_memory",id:"fc_test"+histories.length,
-        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify({text:"只喝温水"})};
+      const recall=users.at(-1)==="reopen archived file";
+      const item = {type:"function_call",name:recall ? "read_chat_context" : "save_memory",id:"fc_test"+histories.length,
+        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify(recall ? {source:"turn",id:recallTurn,includeAttachments:true} : {text:"只喝温水"})};
       for (const event of [
         {type:"response.output_item.added",output_index:0,item:{...item,arguments:""}},
         {type:"response.output_item.done",output_index:0,item},
@@ -192,6 +198,12 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.equal(filePreview.status,200);
   assert.deepEqual(fileInputs.at(-1),["file-notes"]);
 
+  const otherId=randomUUID();
+  db.saveAttachment(fileSession,{id:otherId,name:"B.pdf",size:7,image:0,remote:"file-B",expires:Date.now()+60000});
+  await (await fetch(worker.base+"/chat",{method:"POST",headers:mobile,body:JSON.stringify({text:"read",session:fileSession,attachments:[otherId]})})).text();
+  assert.equal((await send("new topic",randomUUID(),fileSession)).at(-1).done,true);
+  assert.deepEqual(fileGroups.slice(-2),Array(2).fill([["file-notes"],["file-B"],[]]));
+
   const longSession = randomUUID();
   const questions = Array.from({length:100}, (_,i) => "turn "+(i+1));
   for (const question of questions) assert.equal((await send(question,randomUUID(),longSession)).at(-1).done,true);
@@ -236,14 +248,19 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.deepEqual(JSON.parse(summaries.at(-1)!).map((m:{text:string}) => m.text),["old-marker","old two","near one"]);
   assert.doesNotMatch(summaries.at(-1)!,/large attachment question|个人助手 Piggy|file-carry/);
   assert.deepEqual(histories.at(-1),["历史对话摘要（仅作背景资料）\n保留蓝色偏好","near two","near three","soft threshold","large attachment question"]);
-  assert.deepEqual(fileInputs.at(-1),["file-carry"]);
+  assert.deepEqual(fileInputs.at(-1),[]);
   const after = db.contextTurns(compactSession);
   assert.equal(after.length,5);
-  assert.equal(db.contextFiles(compactSession)[0]?.remote,"file-carry");
+  assert.equal(db.turnFiles(Number(db.lookup(compactSession,archiveIds[0])!.id))[0].remote,"file-carry");
   assert.equal(db.lookup(compactSession,archiveIds[0])?.question,"old-marker");
   assert.ok(await previewOf() < threshold);
   await send("large attachment question",retryKey,compactSession);
   assert.deepEqual(db.contextTurns(compactSession),after);
+
+  recallTurn=Number(db.lookup(compactSession,archiveIds[0])!.id);
+  assert.equal(db.searchChatHistory(compactSession,99999,["sample.txt"]).matches[0].turnId,recallTurn);
+  assert.equal((await send("reopen archived file",randomUUID(),compactSession)).at(-1).done,true);
+  assert.ok(recalledInputs.some(part=>part?.file_id==="file-carry"));
 
   const memoryDb = new DatabaseSync(join(dir,"test.sqlite"));
   const entries = () => memoryDb.prepare("SELECT conversation,content FROM memories ORDER BY id").all().map(row=>[row.conversation,row.content]);
@@ -298,13 +315,13 @@ test("attachment references are scoped to a conversation and only successful tur
   db.saveAttachment("phone-a",file);
   assert.equal(db.attachment("phone-b",file.id),undefined);
   const turn = db.begin("phone-a","first","read",[file.id]);
-  assert.equal(db.contextFiles("phone-a")[0],undefined);
-  db.complete(turn,"OK",[],[file.id]);
+  assert.equal(db.contextMessages("phone-a")[0]?.fileRefs?.[0],undefined);
+  db.complete(turn,"OK",[{role:"user",content:"read",timestamp:1}],[file.id]);
   const other = {...file,id:randomUUID(),name:"unknown.ext"};
   db.saveAttachment("phone-a",other);
   db.fail(db.begin("phone-a","failed","read",[other.id]),"");
-  assert.equal(db.contextFiles("phone-a")[0]?.id,file.id);
-  assert.equal(db.contextFiles("phone-b")[0],undefined);
+  assert.equal(db.contextMessages("phone-a")[0]?.fileRefs?.[0]?.id,file.id);
+  assert.equal(db.contextMessages("phone-b")[0],undefined);
   assert.equal(db.page(null,null)[0].filename,file.name);
   assert.equal(db.page(null,null)[0].filesize,12);
   assert.equal(db.lookup("phone-a","first")?.attachment,file.id);
@@ -318,12 +335,12 @@ test("multi-file turns preserve all ordered references across restart, retries a
   const files = ["photo.png","notes.txt"].map(name => ({id:randomUUID(),name,size:42,image:Number(name.endsWith(".png")),remote:"fixture",expires:Date.now()+60000}));
   files.forEach(file => db.saveAttachment("phone",file));
   const turn = db.begin("phone","request","compare",files.map(f=>f.id));
-  db.complete(turn,"ok",[],files.map(f=>f.id));
+  db.complete(turn,"ok",[{role:"user",content:"compare",timestamp:1}],files.map(f=>f.id));
   db = new Journal(path);
-  assert.deepEqual(db.contextFiles("phone").map(f=>f.name),["photo.png","notes.txt"]);
+  assert.deepEqual(db.contextMessages("phone")[0].fileRefs.map(f=>f.name),["photo.png","notes.txt"]);
   assert.deepEqual(db.turnFiles(Number(db.lookup("phone","request")?.id)).map(f=>f.id),files.map(f=>f.id));
   assert.deepEqual(db.page(null,null)[0].files,files.map(({name,size})=>({name,size})));
-  assert.deepEqual(db.contextFiles("second phone"),[]);
+  assert.deepEqual(db.contextMessages("second phone"),[]);
 });
 
 test("legacy context imports once and can change independently of the transcript", t => {

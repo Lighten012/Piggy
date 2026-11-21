@@ -67,14 +67,34 @@ function activeSettings() {
   if (!validSettings(current)) throw new Error("Unsupported stored model settings");
   return current;
 }
-const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。遇到新闻、需要核实的近期变化或用户明确要求联网时，使用网页搜索核实，按来源的发布日期和事件日期回答，提供可点击的行内出处。无法查证时如实说明。用户要求图片或可下载的文件时，调用对应工具实际生成。使用代码解释器生成的文件请在最终答复中链接到 sandbox:/mnt/data/ 下的成品。";
-function addFiles(input: unknown[], files: Attachment[]) {
-  if (!files.length) return;
-  const user = input.findLast((item): item is {role:"user"; content:unknown} =>
-    typeof item === "object" && item !== null && "role" in item && item.role === "user");
-  if (!Array.isArray(user?.content)) throw new Error("Missing attachment message");
-  for (const file of files) user.content.push(file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} :
-    {type:"input_file",file_id:file.remote});
+const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。遇到新闻、需要核实的近期变化或用户明确要求联网时，使用网页搜索核实，按来源的发布日期和事件日期回答，提供可点击的行内出处。无法查证时如实说明。用户要求图片或可下载的文件时，调用对应工具实际生成。使用代码解释器生成的文件请在最终答复中链接到 sandbox:/mnt/data/ 下的成品。用户追问旧附件时先查看原消息。上下文里只剩摘要而需要原件时，用文件名或聊天关键词查找原始轮次，再用 read_chat_context 的 includeAttachments 读取那一轮的附件。";
+type FileMessage = Message & {fileRefs?:Attachment[]};
+function fileParts(files:Attachment[]) {
+  return files.map(file => file.expires <= Date.now() ? {type:"input_text",text:`附件已过期：${file.name}`} :
+    file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} : {type:"input_file",file_id:file.remote});
+}
+
+function bindFiles(input:unknown[], messages:FileMessage[]) {
+  const wire = input as {role?:string;content?:unknown[];type?:string;call_id?:string;output?:unknown}[];
+  const users = wire.filter(item=>item.role === "user");
+  const originals = messages.filter(m=>m.role === "user" && (typeof m.content === "string" || m.content.length));
+  if (users.length !== originals.length) throw new Error("Unexpected user message mapping");
+  originals.forEach((message,i) => {
+    if (message.fileRefs?.length) users[i].content!.push(...fileParts(message.fileRefs));
+  });
+  for (const m of messages) {
+    if (m.role !== "toolResult" || m.toolName !== "read_chat_context") continue;
+    const files = (m.details as {recalledFiles?:Attachment[]} | undefined)?.recalledFiles;
+    if (!files?.length) continue;
+    const item = wire.find(i=>i.type === "function_call_output" && i.call_id === m.toolCallId.split("|")[0]);
+    if (item) item.output = [...(Array.isArray(item.output) ? item.output : [{type:"input_text",text:String(item.output)}]),...fileParts(files)];
+  }
+}
+function inputFileIds(input:unknown[]) {
+  return (input as {content?:unknown;output?:unknown}[]).flatMap(item=>{
+    const parts = item.content ?? item.output;
+    return Array.isArray(parts) ? parts.flatMap(p=>typeof p.file_id === "string" ? [p.file_id] : []) : [];
+  });
 }
 class ProviderWindowExceeded extends Error {}
 async function countInput(model: Model<"openai-responses">, input: unknown[], tools?: unknown[], signal?: AbortSignal) {
@@ -104,19 +124,18 @@ async function countChatInput(model:Model<"openai-responses">, input:unknown[], 
   await delay(300,undefined,{signal});
   return countInput(model,input,tools,signal);
 }
-function toolFileIds(conversation: string, files: Attachment[]) {
-  const previous = journal.previousOutputs(conversation).filter(f => f.until > Date.now());
-  return [...files.map(f => f.remote), ...previous.map(f => f.remote)];
+function toolsForInput(input:unknown[], previous:string[]) {
+  return responseTools([...inputFileIds(input),...previous]);
 }
-function promptForFiles(stored: number, available: number) {
+function systemInstructions() {
   const prompt = [persona, ...loadedSkills.map(skill => skill.instructions)].join("\n\n");
   const today = new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai"}).format(Date.now());
-  return prompt + "\n当前北京时间日期：" + today + "。" + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
+  return prompt + "\n当前北京时间日期：" + today + "。";
 }
 type ContextUsage = Awaited<ReturnType<typeof countInput>>;
-function wireInput(model: Model<"openai-responses">, systemPrompt:string, messages:Message[], files:Attachment[]) {
+function wireInput(model: Model<"openai-responses">, systemPrompt:string, messages:FileMessage[]) {
   const input = convertResponsesMessages(model, normalizeContext({systemPrompt,messages}), new Set(["openai"]));
-  addFiles(input,files);
+  bindFiles(input,messages);
   return input;
 }
 function countFailure(files:Attachment[], error:unknown) {
@@ -145,8 +164,8 @@ function newAgent(agentTools:AgentTool[], model: Model<"openai-responses">, sett
         body.service_tier = settings.tier;
         if (settings.effort !== "off") body.reasoning = {...body.reasoning,effort:settings.effort};
         const input = body.input;
-        const tools = body.tools = [...(body.tools ?? []), ...responseTools(availableIds)];
-        addFiles(input, files);
+        bindFiles(input,context.messages);
+        const tools = body.tools = [...(body.tools ?? []), ...toolsForInput(input,availableIds)];
         let usage: ContextUsage;
         try { usage = await count(input, tools, options?.signal); }
         catch (error) {
@@ -192,13 +211,11 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     if (readingContext) return reject(res,503,"上下文用量正在读取，请稍后重试");
     readingContext = true;
     try {
-      const stored = journal.contextFiles(data.session);
-      const files = stored.filter((file): file is Attachment => !!file && file.expires > Date.now());
       const messages = journal.contextMessages(data.session) as Message[];
-      if (files.length) messages.push({role:"user",content:[{type:"text",text:""}],timestamp:Date.now()});
-      const input = wireInput(model,promptForFiles(stored.length,files.length),messages,files);
+      const input = wireInput(model,systemInstructions(),messages);
       const tools = convertResponsesTools(toolDeclarations, {supportsStrictMode:true});
-      const usage = await countInput(model, input, [...tools, ...responseTools(toolFileIds(data.session,files))]);
+      const previous = journal.previousOutputs(data.session).filter(f=>f.until>Date.now()).map(f=>f.remote);
+      const usage = await countInput(model, input, [...tools, ...toolsForInput(input,previous)]);
       res.writeHead(200,{"Content-Type":"application/json"});
       res.end(JSON.stringify(usage));
     } catch { reject(res,503,"上下文用量暂时无法读取"); }
@@ -227,7 +244,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   }
   if (busy) return reject(res,409,"上一条消息仍在生成，请稍后重试");
   if (!fixturePort && memoryUnderPressure()) return reject(res,503,"服务器可用内存不足，请稍后重试");
-  const stored = ids.length ? ids.map(id => journal.attachment(conversation,id)) : journal.contextFiles(conversation);
+  const stored = ids.map(id => journal.attachment(conversation,id));
   if (ids.length && stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
   const files = stored.filter((f): f is Attachment => !!f && f.expires > Date.now());
   if (ids.length && files.length !== ids.length) return reject(res,410,"附件已过期，请重新选择");
@@ -242,10 +259,9 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const outputs = new ReplyFiles(retention,model.baseUrl,apiKey);
   const search = new WebSearch();
   let actualTier: string | undefined;
-  const availableIds = toolFileIds(conversation,files);
-  const systemPrompt = promptForFiles(stored.length,files.length);
+  const availableIds = journal.previousOutputs(conversation).filter(f=>f.until>Date.now()).map(f=>f.remote);
+  const systemPrompt = systemInstructions();
   const declared = convertResponsesTools(toolDeclarations, {supportsStrictMode:true});
-  const tools = [...declared, ...responseTools(availableIds)];
   const controller = new AbortController();
   let cache: {input:unknown[]; tools:unknown[]; usage:ContextUsage} | undefined;
   async function count(input:unknown[], tools:unknown[], signal?:AbortSignal) {
@@ -272,10 +288,10 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   let committed = false;
 
   try {
-    const current:Message = {role:"user",content:question,timestamp:Date.now()};
+    const current:FileMessage = {fileRefs:files,role:"user",content:question,timestamp:Date.now()};
     const prepared = await prepareHistory(turns,async history => {
-      const input = wireInput(model,systemPrompt,[...history,current],files);
-      try { return (await count(input,tools,controller.signal)).used; }
+      const input = wireInput(model,systemPrompt,[...history,current]);
+      try { return (await count(input,[...declared,...toolsForInput(input,availableIds)],controller.signal)).used; }
       catch (error) {
         if (error instanceof ProviderWindowExceeded) return Infinity;
         throw new ContextError(countFailure(files,error));

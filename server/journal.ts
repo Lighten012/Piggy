@@ -11,7 +11,8 @@ export interface Attachment {
 
 import type { ModelSettings } from "./model-settings.ts";
 
-export interface ContextTurn { sequence: number; messages: AgentMessage[] }
+type ContextMessage = AgentMessage & {fileRefs?: Attachment[]};
+export interface ContextTurn { sequence: number; messages: ContextMessage[] }
 export interface ContextReplacement { through: number; last: number; summary: AgentMessage }
 
 interface Copy { key: string; until: number; mime: string }
@@ -164,35 +165,33 @@ export class Journal {
       JOIN attachments a ON a.conversation=t.conversation AND a.id=f.attachment
       WHERE f.turn_id=? ORDER BY f.position`).all(turn) as unknown as Attachment[];
   }
-  contextFiles(conversation: string): (Attachment | undefined)[] {
-    const row = this.db.prepare(`SELECT files FROM active_context WHERE conversation=? AND files IS NOT NULL
-      ORDER BY sequence DESC LIMIT 1`).get(conversation);
-    const ids: string[] = row ? JSON.parse(String(row.files)) : [];
-    return ids.map(id => this.attachment(conversation,id));
-  }
-
   contextTurns(conversation: string): ContextTurn[] {
     const turns: ContextTurn[] = [];
-    const rows = this.db.prepare("SELECT sequence,messages FROM active_context WHERE conversation=? ORDER BY sequence");
-    for (const row of rows.iterate(conversation))
-      turns.push({sequence:Number(row.sequence), messages:JSON.parse(String(row.messages))});
+    const rows = this.db.prepare("SELECT sequence,messages,files FROM active_context WHERE conversation=? ORDER BY sequence");
+    for (const row of rows.iterate(conversation)) {
+      const messages = JSON.parse(String(row.messages));
+      // Older checkpoints copied the last upload into a synthetic summary row.
+      // Real upload turns always include the user's message and the assistant reply.
+      if (row.files && messages[0]?.role === "user" &&
+          !(messages.length === 1 && String(messages[0].content).startsWith("历史对话摘要（仅作背景资料）\n"))) {
+        messages[0].fileRefs = JSON.parse(String(row.files)).map((id:string) => this.attachment(conversation,id)).filter(Boolean);
+      }
+      turns.push({sequence:Number(row.sequence), messages});
+    }
     return turns;
   }
-  contextMessages(conversation: string): AgentMessage[] {
+  contextMessages(conversation: string): ContextMessage[] {
     return this.contextTurns(conversation).flatMap(turn => turn.messages);
   }
   private replacePrefix(conversation: string, replacement: ContextReplacement) {
     const {through,last,summary} = replacement;
     const latest = this.db.prepare("SELECT max(sequence) AS last FROM active_context WHERE conversation=?").get(conversation);
     if (latest?.last !== last) throw new Error("Conversation changed during compaction");
-    // Keep the latest upload and generated-file references independently, even if
-    // they were attached to different turns in the replaced prefix.
     const changed = this.db.prepare(`
-      UPDATE active_context SET messages=?,
-        files=(SELECT files FROM active_context WHERE conversation=? AND sequence<=? AND files IS NOT NULL ORDER BY sequence DESC LIMIT 1),
+      UPDATE active_context SET messages=?, files=NULL,
         output_files=(SELECT output_files FROM active_context WHERE conversation=? AND sequence<=? AND output_files IS NOT NULL ORDER BY sequence DESC LIMIT 1)
       WHERE conversation=? AND sequence=?
-    `).run(JSON.stringify([summary]),conversation,through,conversation,through,conversation,through);
+    `).run(JSON.stringify([summary]),conversation,through,conversation,through);
     if (changed.changes !== 1) throw new Error("Missing compaction boundary");
     this.db.prepare("DELETE FROM active_context WHERE conversation=? AND sequence<?").run(conversation,through);
   }
@@ -223,19 +222,41 @@ export class Journal {
       const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until) VALUES(?,?,?,?,?,?,?)");
       outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until));
       this.db.prepare("INSERT INTO active_context(conversation,messages,files,output_files) VALUES(?,?,?,?)")
-        .run(turn.conversation,JSON.stringify(messages),files.length ? JSON.stringify(files) : null,outputs.length ? JSON.stringify(outputs) : null);
+        .run(turn.conversation,JSON.stringify(messages.map(({fileRefs, ...message}:ContextMessage) => message)),files.length ? JSON.stringify(files) : null,outputs.length ? JSON.stringify(outputs) : null);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
   }
-  saveMemory(turn:number|bigint, content:string) {
-    const source = this.db.prepare("SELECT conversation FROM turns WHERE id=? AND status='pending'").get(turn);
+  replacementSources(turn:number|bigint, ids:number[]) {
+    const lookup=this.db.prepare(`SELECT m.content FROM memories m JOIN turns t ON m.conversation=t.conversation
+      WHERE t.id=? AND m.id=? AND (m.superseded_by IS NULL OR m.superseded_by IN
+        (SELECT id FROM memories WHERE conversation=t.conversation AND turn_id=t.id))`);
+    return ids.map(id=>{
+      const row=lookup.get(turn,id);
+      if (!row) throw new Error("请重新检索当前会话中的有效记忆。");
+      return String(row.content);
+    });
+  }
+
+  saveMemory(turn:number|bigint, content:string, replaces:number[] = []) {
+    const source = this.db.prepare("SELECT conversation,created FROM turns WHERE id=? AND status='pending'").get(turn);
     if (!source) throw new Error("当前消息已结束，无法保存记忆。");
-    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content) VALUES(?,?,?,?)
-      ON CONFLICT(conversation,content) DO NOTHING`).run(source.conversation,turn,Date.now(),content);
-    return Number(this.db.prepare("SELECT id FROM memories WHERE conversation=? AND content=?").get(source.conversation,content)!.id);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.replacementSources(turn,replaces);
+      const saved=this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content) VALUES(?,?,?,?)
+        ON CONFLICT(conversation,content) DO UPDATE SET turn_id=excluded.turn_id,created=excluded.created,superseded_by=NULL
+        RETURNING id`).get(source.conversation,turn,source.created,content)!;
+      const retire=this.db.prepare("UPDATE memories SET superseded_by=? WHERE conversation=? AND id=? AND id<>?");
+      for (const id of replaces) retire.run(saved.id,source.conversation,id,saved.id);
+      this.db.exec("COMMIT");
+      return Number(saved.id);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   searchChatHistory(conversation:string, before:number|bigint, keywords:string[], offset=0) {
@@ -243,7 +264,9 @@ export class Journal {
     if (!terms.length) return {matches:[]};
     const rows = this.db.prepare(`
       SELECT t.id,t.created,t.question,t.answer,t.status FROM turns t JOIN json_each(?) word
-      ON instr(lower(t.question),word.value)>0 OR instr(lower(t.answer),word.value)>0
+      ON instr(lower(t.question),word.value)>0 OR instr(lower(t.answer),word.value)>0 OR EXISTS
+        (SELECT 1 FROM turn_files f JOIN attachments a ON a.conversation=t.conversation AND a.id=f.attachment
+         WHERE f.turn_id=t.id AND instr(lower(a.name),word.value)>0)
       WHERE t.conversation=? AND t.id<? GROUP BY t.id
       ORDER BY count(*) DESC,t.id DESC LIMIT 9 OFFSET ?
     `).all(JSON.stringify(terms),conversation,before,offset);
@@ -267,7 +290,7 @@ export class Journal {
     const turns = [...older,main,...newer].map(row => {
       const question = String(row.question), answer = String(row.answer);
       const end = offset+1200;
-      return {turnId:row.id,created:row.created,status:row.status,question:question.slice(offset,end),answer:answer.slice(offset,end),
+      return {turnId:row.id,created:row.created,status:row.status,attachments:this.turnFiles(Number(row.id)).map(f=>({name:f.name,available:f.expires>Date.now()})),question:question.slice(offset,end),answer:answer.slice(offset,end),
         nextOffset:Math.max(question.length,answer.length)>end ? end : undefined};
     });
     return {anchorTurnId:anchor,turns};
