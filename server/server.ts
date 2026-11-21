@@ -1,4 +1,4 @@
-import { organize } from "./memory-planner.ts";
+import { organize, MemoryPlanError } from "./memory-planner.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -62,9 +62,10 @@ async function syncMemories() {
     if (legacy) {
       try {
         await organize(journal.topics,legacy,journal.topics.sourceQuestion(legacy)??legacy.quote,undefined,resolveModel(activeSettings(),baseUrl),apiKey!);
-      } catch {
+      } catch (error) {
         journal.topics.deferLegacy(legacy.conversation);
-        console.warn("Memory migration deferred for legacy row",legacy.legacy);
+        const reason=error instanceof MemoryPlanError ? error.reason : error instanceof Error ? error.name : "unknown";
+        console.warn("Memory migration deferred for legacy row",legacy.legacy,reason);
       }
       delay=1000;
     }
