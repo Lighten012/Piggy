@@ -1,6 +1,9 @@
 package dev.pichat
 
-import android.app.Activity
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -15,14 +18,16 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 
-class PiggyClient(private val activity: Activity, private val outdated: () -> Unit) {
+class PiggyClient(context: Context, private val outdated: () -> Unit) {
+    private val context = context.applicationContext
+    private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val selectionWorker = Executors.newSingleThreadExecutor()
     private val contextWorker = Executors.newSingleThreadExecutor()
     private val endpoint = PiggyServer.url("/mobile/chat")
     @Volatile private var closed = false
     private val connections = ConcurrentHashMap.newKeySet<HttpsURLConnection>()
-    private val prefs = activity.getSharedPreferences("conversation", Activity.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("conversation", Context.MODE_PRIVATE)
     private val session = prefs.getString("session", null) ?: UUID.randomUUID().toString().also {
         prefs.edit().putString("session", it).commit()
     }
@@ -45,18 +50,23 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         prefs.edit().putString("composer", value).apply()
     }
 
+    val pendingId: String? get() = prefs.getString("pendingId", null)
+    val inFlight: Boolean get() = prefs.getBoolean("sending", false)
+    val pendingText: String get() = prefs.getString("pendingText", "").orEmpty()
+    fun endFlight() { prefs.edit().remove("sending").commit() }
+
     fun beginSend(text: String, draft: String, retry: Boolean): Boolean {
         val id = prefs.getString("pendingId", null)?.takeIf { prefs.getString("pendingText", null) == text }
             ?: UUID.randomUUID().toString()
         val edit = prefs.edit().putString("pendingText", text).putString("pendingDraft", draft)
-            .putString("pendingId", id).putBoolean("pendingSeparate", true)
+            .putBoolean("sending", true).putString("pendingId", id).putBoolean("pendingSeparate", true)
         if (!retry) edit.putString("composer", "").putString("pendingFiles", JSONArray(attachments).toString())
             .remove("files").remove("file")
         return edit.commit()
     }
 
     fun restorePendingIfEmpty() {
-        if (pendingSeparate && draft.isEmpty() && attachments.isEmpty()) {
+        if (!inFlight && pendingSeparate && draft.isEmpty() && attachments.isEmpty()) {
             prefs.edit().putString("composer", pendingDraft).putString("files", JSONArray(pendingAttachments).toString())
                 .remove("pendingFiles").remove("pendingSeparate").commit()
         }
@@ -99,10 +109,10 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
 
     fun sizeLabel(file: JSONObject): String {
         val size = file.optLong("size", -1)
-        return if (size >= 0) Formatter.formatFileSize(activity, size) else ""
+        return if (size >= 0) Formatter.formatFileSize(context, size) else ""
     }
 
-    internal val formats = AttachmentFormats(activity)
+    internal val formats = AttachmentFormats(context)
 
     fun chooseFiles(uris: List<Uri>, finished: (String?) -> Unit) = selectionWorker.execute {
         val result = runCatching { addSelection(uris) }
@@ -114,7 +124,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         val added = uris.distinct().filter { uri -> current.none { it.getString("uri") == uri.toString() } }
         if (added.isEmpty()) return null
         val rejected = mutableListOf<String>()
-        val resolver = activity.contentResolver
+        val resolver = context.contentResolver
         val files = added.mapNotNull { uri ->
             var name = uri.lastPathSegment?.substringAfterLast('/') ?: "附件"
             var size = -1L
@@ -160,7 +170,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         if ((attachments + pendingAttachments).any { it.getString("uri") == uri }) return
         val history = recent
         if ((0 until history.length()).any { i -> turnFiles(history.getJSONObject(i)).any { it.optString("uri") == uri } }) return
-        runCatching { activity.contentResolver.releasePersistableUriPermission(
+        runCatching { context.contentResolver.releasePersistableUriPermission(
             Uri.parse(uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 
@@ -169,7 +179,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         releaseFile(file)
     }
 
-    private fun ui(action: () -> Unit) = activity.runOnUiThread { if (!closed) action() }
+    private fun ui(action: () -> Unit) = main.post { if (!closed) action() }
 
     private fun post(url: URL, write: (HttpsURLConnection) -> Unit, consume: (HttpsURLConnection) -> Unit) {
         val http = url.openConnection() as HttpsURLConnection
@@ -189,7 +199,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                 if (status == 422 && url == endpoint) prefs.edit().remove("pendingId").commit()
                 val detail = http.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
                 val message = runCatching { JSONObject(detail).getString("error") }.getOrNull()
-                throw IOException(message ?: if (status == 413) "每个附件最多 10 MB" else "服务器返回 HTTP $status")
+                throw HttpFailure(status, http.getHeaderField("Retry-After") != null, message ?: "服务器返回 HTTP $status")
             }
             consume(http)
         } finally {
@@ -209,7 +219,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             val size = file.getLong("size")
             if (size >= 0) http.setFixedLengthStreamingMode(size) else http.setChunkedStreamingMode(32768)
             val uri = Uri.parse(file.getString("uri"))
-            val input = activity.contentResolver.openInputStream(uri) ?: throw IOException("无法读取所选文件")
+            val input = context.contentResolver.openInputStream(uri) ?: throw IOException("无法读取所选文件")
             input.use { source -> http.outputStream.use { source.copyTo(it, 32768) } }
         }) { http ->
             val result = JSONObject(http.inputStream.bufferedReader().use { it.readText() })
@@ -239,7 +249,25 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         ui { finished(current) }
     }
 
-    fun send(text: String, draftText: String, uploaded: () -> Unit, measured: (ContextUsage) -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
+    private class HttpFailure(val status: Int, val pending: Boolean, message: String) : IOException(message)
+
+    private fun retryNetwork(status: (String) -> Unit, block: () -> Unit) {
+        val deadline = SystemClock.elapsedRealtime() + 390_000
+        var failures = 0
+        while (true) {
+            try { block(); return } catch (e: IOException) {
+                if (closed || SystemClock.elapsedRealtime() >= deadline ||
+                    e is javax.net.ssl.SSLHandshakeException || e is javax.net.ssl.SSLPeerUnverifiedException) throw e
+                val waiting = e is HttpFailure && e.status == 409 && e.pending
+                if (e is HttpFailure && !waiting && e.status !in listOf(408, 429, 502, 503, 504)) throw e
+                if (!waiting && ++failures > 3) throw e
+                ui { status(if (waiting) "服务器仍在回复…" else "连接中断，正在重试…") }
+                Thread.sleep(if (waiting) 3000L else 1000L shl (failures - 1))
+            }
+        }
+    }
+
+    fun send(text: String, draftText: String, status: (String) -> Unit, measured: (ContextUsage) -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
         val failure = runCatching {
             val id = checkNotNull(prefs.getString("pendingId", null))
             val files = pendingAttachments
@@ -250,69 +278,71 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             }
             for (file in files) {
                 if (file.optBoolean("uploaded")) continue
-                upload(file)
+                retryNetwork(status) { upload(file) }
                 check(prefs.edit().putString("pendingFiles",JSONArray(files).toString()).commit())
             }
-            ui(uploaded)
+            ui { status("正在回复…") }
             val data = JSONObject().put("text",text).put("session",session).put("request",id)
             if (files.isNotEmpty()) data.put("attachments",JSONArray(files.map { it.getString("id") }))
-            post(endpoint, { http ->
-                http.setRequestProperty("Content-Type","application/json")
-                http.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
-            }) { http ->
-                var done = false
-                var replies: JSONArray? = null
-                val answer = StringBuilder()
-                http.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                    for (line in lines) {
-                        if (closed) throw IOException("连接已关闭")
-                        if (line.isBlank()) continue
-                        val event = JSONObject(line)
-                        event.optJSONObject("context")?.let {
-                            runCatching { usage(it) }.getOrNull()?.let { value -> ui { measured(value) } }
-                        }
-                        if (event.has("error")) {
-                            prefs.edit().remove("pendingId").commit()
-                            throw IOException(event.getString("error"))
-                        }
-                        if (event.has("delta")) {
-                            val part = event.getString("delta")
-                            answer.append(part)
-                            ui { delta(part) }
-                        }
-                        if (event.optBoolean("done")) {
-                            if (event.has("answer")) {
-                                answer.clear()
-                                answer.append(event.getString("answer"))
+            retryNetwork(status) {
+                post(endpoint, { http ->
+                    http.setRequestProperty("Content-Type","application/json")
+                    http.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
+                }) { http ->
+                    var done = false
+                    var replies: JSONArray? = null
+                    val answer = StringBuilder()
+                    http.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                        for (line in lines) {
+                            if (closed) throw IOException("连接已关闭")
+                            if (line.isBlank()) continue
+                            val event = JSONObject(line)
+                            event.optJSONObject("context")?.let {
+                                runCatching { usage(it) }.getOrNull()?.let { value -> ui { measured(value) } }
                             }
-                            replies = event.optJSONArray("replyFiles")
-                            done = true
+                            if (event.has("error")) {
+                                prefs.edit().remove("pendingId").commit()
+                                throw IllegalStateException(event.getString("error"))
+                            }
+                            if (event.has("delta")) {
+                                val part = event.getString("delta")
+                                answer.append(part)
+                                ui { delta(part) }
+                            }
+                            if (event.optBoolean("done")) {
+                                if (event.has("answer")) {
+                                    answer.clear()
+                                    answer.append(event.getString("answer"))
+                                }
+                                replies = event.optJSONArray("replyFiles")
+                                done = true
+                            }
                         }
                     }
-                }
-                if (!done) throw IOException("回复中断，请重试")
-                val saved = recent
-                val turn = JSONObject().put("text", draftText).put("answer", answer.toString())
-                if (files.isNotEmpty()) {
-                    files.forEach { ImagePreviews.save(activity, it) }
-                    turn.put("files", JSONArray(files))
-                }
-                replies?.let { turn.put("replyFiles", it) }
-                saved.put(turn)
-                val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
-                check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
-                    .remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
-                if (evicted != null) for (file in turnFiles(evicted)) {
-                    ImagePreviews.discard(activity, file.getString("id"))
-                    releaseFile(file)
+                    if (!done) throw IOException("回复中断，请重试")
+                    val saved = recent
+                    val turn = JSONObject().put("text", draftText).put("answer", answer.toString())
+                    if (files.isNotEmpty()) {
+                        files.forEach { ImagePreviews.save(context, it) }
+                        turn.put("files", JSONArray(files))
+                    }
+                    replies?.let { turn.put("replyFiles", it) }
+                    saved.put(turn)
+                    val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
+                    check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
+                        .remove("sending").remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
+                    if (evicted != null) for (file in turnFiles(evicted)) {
+                        ImagePreviews.discard(context, file.getString("id"))
+                        releaseFile(file)
+                    }
                 }
             }
         }.exceptionOrNull()
-        ui { finished(failure?.localizedMessage) }
+        if (!closed) ui { finished(failure?.localizedMessage) }
     }
 
     private val downloads = Executors.newSingleThreadExecutor()
-    private val downloadDir = java.io.File(activity.cacheDir, "reply-files")
+    private val downloadDir = java.io.File(context.cacheDir, "reply-files")
 
     private fun pruneDownloads() {
         val now = System.currentTimeMillis()
@@ -324,9 +354,9 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         downloads.execute {
             pruneDownloads()
             val now = System.currentTimeMillis()
-            java.io.File(activity.cacheDir, "office-previews").listFiles()
+            java.io.File(context.cacheDir, "office-previews").listFiles()
                 ?.filter { it.lastModified() <= now }?.forEach { it.delete() }
-            activity.cacheDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("reader-") &&
+            context.cacheDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("reader-") &&
                 it.name.endsWith(".tmp") && it.lastModified() < now - 7L * 86400000 }
                 ?.forEach { it.deleteRecursively() }
         }
@@ -358,10 +388,10 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                 }
             }
             if (target != null) {
-                val stream = activity.contentResolver.openOutputStream(target, "wt") ?: throw IOException("无法保存文件")
+                val stream = context.contentResolver.openOutputStream(target, "wt") ?: throw IOException("无法保存文件")
                 stream.use { out -> cached.inputStream().use { it.copyTo(out) } }
                 target
-            } else androidx.core.content.FileProvider.getUriForFile(activity, activity.packageName + ".updates", cached)
+            } else androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".updates", cached)
         }
         ui { finished(result.getOrNull(), result.exceptionOrNull()?.localizedMessage) }
     }

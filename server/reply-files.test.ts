@@ -30,19 +30,30 @@ test("generated files are deduplicated, scoped to a reply and removed after seve
   await once(fixture,"listening");
   t.after(() => fixture.close());
   const result = new ReplyFiles(archive,"http://127.0.0.1:"+(fixture.address() as AddressInfo).port,"fixture");
+  const href = "sandbox:/mnt/data/deliverables/%E9%A2%84%E7%AE%97.xlsx";
+  const link = "🐷[预算]("+href+")";
+  const begin = Array.from("🐷[预算](").length;
   const output = [
-    {type:"message",content:[{annotations:[{type:"container_file_citation",container_id:"cn_1",file_id:"f_1",filename:"/mnt/data/预算.xlsx"}]}]},
+    {type:"message",content:[{text:link,annotations:[{type:"container_file_citation",container_id:"cn_1",file_id:"f_1",filename:"预算.xlsx",start_index:begin,end_index:begin+href.length}]}]},
     {type:"image_generation_call",id:"ig_1",result:jpg.toString("base64")},
   ];
   for (const item of output) await result.observe({type:"response.output_item.done",item});
   await result.observe({type:"response.completed",response:{output}});
+  await result.observe({type:"response.output_item.done",item:{type:"message",content:[{text:"sandbox:/mnt/data/预算.xlsx",annotations:[
+    {type:"container_file_citation",container_id:"cn_1",file_id:"input-copy",filename:"预算.xlsx",start_index:0,end_index:24},
+    {type:"container_file_citation",container_id:"cn_1",file_id:"thumbnail",filename:"preview.png"}
+  ]}]}});
+  await result.deliver("根据之前图片作答，无需文件。");
+  assert.equal(uploads,1); // Only the dedicated image-generation result has been archived.
+  await result.deliver(link);
+  await result.deliver(link);
   assert.equal(uploads,2);
   const id = journal.begin("phone","req","画图并制作表格");
   journal.complete(id,replyText("",result.files),[],[],result.files);
   const files = journal.replyFiles(id);
   assert.equal(files.length,2);
-  assert.equal(files[0].name,"预算.xlsx");
-  assert.equal(files[1].preview,"image/jpeg");
+  assert.equal(files[1].name,"预算.xlsx");
+  assert.equal(files[0].preview,"image/jpeg");
   assert.equal(journal.previousOutputs("phone")[0].remote,"file-1");
   assert.equal(journal.retained(String(files[0].key),"another-phone"),undefined);
   assert.ok(journal.retained(String(files[0].key),"phone"));
@@ -50,7 +61,7 @@ test("generated files are deduplicated, scoped to a reply and removed after seve
   assert.equal(replyText("[预算](sandbox:/mnt/data/budget.xlsx)",result.files),"预算");
   for (const [i,f] of result.files.entries()) {
     assert.ok(f.until > Date.now()+week-30000 && f.until <= Date.now()+week);
-    assert.deepEqual(await readFile(join(dir,"attachments",f.key)),i ? jpg : doc);
+    assert.deepEqual(await readFile(join(dir,"attachments",f.key)),i ? doc : jpg);
   }
   await archive.sweep(journal,Date.now()+week+1);
   assert.deepEqual(await readdir(join(dir,"attachments")),[]);

@@ -238,12 +238,7 @@ class ChatActivity : Activity() {
         client = PiggyClient(this) { updater.check() }
         client.lastUsage?.let(contextMeter::update)
         updater = AppUpdater(this, ::showVersion)
-        val recent = client.recent
-        for (i in 0 until recent.length()) {
-            val turn = recent.getJSONObject(i)
-            bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
-            bubble(turn.getString("answer"), false, client.replyFiles(turn))
-        }
+        renderHistory()
         client.restorePendingIfEmpty()
         input.setText(client.draft)
         input.setSelection(input.length())
@@ -252,7 +247,7 @@ class ChatActivity : Activity() {
             override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) = client.saveDraft(s.toString())
             override fun afterTextChanged(s: Editable?) {}
         })
-        if (client.pendingSeparate) showPendingError("上一条消息尚未确认送达")
+        if (client.pendingSeparate && !client.inFlight) showPendingError("上一条消息尚未确认送达")
         showFile()
         updater.checkOnLaunch()
     }
@@ -435,7 +430,13 @@ class ChatActivity : Activity() {
         chat.visibility = if (versionCurrent) View.VISIBLE else View.GONE
         gate.visibility = if (versionCurrent) View.GONE else View.VISIBLE
         controls()
-        if (versionCurrent) { refreshContext(); toBottom(); return }
+        if (versionCurrent) {
+            if (client.inFlight && !generating) watchSend()
+            else if (!generating) renderHistory()
+            refreshContext()
+            toBottom()
+            return
+        }
         gateProgress.visibility = if (state == UpdateState.Checking || state is UpdateState.Preparing) View.VISIBLE else View.GONE
         gateDownload.visibility = if (state is UpdateState.Downloading) View.VISIBLE else View.GONE
         gateAction.visibility = View.GONE
@@ -627,17 +628,35 @@ class ChatActivity : Activity() {
             return
         }
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
+        if (!retry) input.setText("")
+        watchSend()
+    }
+
+    private fun renderHistory() {
+        transcript.removeViews(1, transcript.childCount - 1)
+        empty.visibility = View.VISIBLE
+        val recent = client.recent
+        for (i in 0 until recent.length()) {
+            val turn = recent.getJSONObject(i)
+            bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
+            bubble(turn.getString("answer"), false, client.replyFiles(turn))
+        }
+    }
+
+    private var sendListener: ChatSendService.Listener? = null
+
+    private fun watchSend() {
+        val id = client.pendingId ?: run { client.endFlight(); showPendingError("请重试上一条消息"); return }
         generating = true
         contextEpoch++
         controls()
         sendError.visibility = View.GONE
-        if (!retry) input.setText("")
         showFile()
-        val firstPendingRow = transcript.childCount
-        bubble(draft, true, files)
+        val files = client.pendingAttachments
+        bubble(client.pendingDraft, true, files)
         val reply = bubble("", false).apply { hint = if (files.isEmpty()) "正在回复…" else "正在发送附件…" }
         toBottom()
-        val source = StringBuilder()
+        var source: CharSequence = ""
         var scheduled = false
         val render = Runnable {
             scheduled = false
@@ -645,42 +664,50 @@ class ChatActivity : Activity() {
             renderMessage(reply, source.toString())
             if (follow) toBottom()
         }
-        client.send(message, draft, uploaded = { reply.hint = "正在回复…" }, measured = ::displayUsage, delta = { part ->
-            reply.hint = ""
-            source.append(part)
-            if (!scheduled) {
-                scheduled = true
-                reply.postDelayed(render, 100)
+        val observer = object : ChatSendService.Listener {
+            override fun progress(partial: CharSequence, status: String, usage: ContextUsage?) {
+                source = partial
+                reply.hint = status
+                usage?.let(::displayUsage)
+                if (!scheduled) { scheduled = true; reply.postDelayed(render, 100) }
             }
-        }, finished = { error ->
-            reply.removeCallbacks(render)
-            if (error == null) {
+            override fun finished(error: String?, outdated: Boolean) {
+                reply.removeCallbacks(render)
+                ChatSendService.listener = null
+                sendListener = null
                 val follow = !scroll.canScrollVertically(1)
-                val history = client.recent
-                val turn = history.getJSONObject(history.length() - 1)
-                transcript.removeViewAt(firstPendingRow + 1)
-                bubble(turn.getString("answer"), false, client.replyFiles(turn))
-                if (follow) toBottom()
-            } else {
-                transcript.removeViews(firstPendingRow, transcript.childCount - firstPendingRow)
-                if (firstPendingRow == 1) empty.visibility = View.VISIBLE
-                sendError.text = error
-                sendError.visibility = View.VISIBLE
-                if (!selecting) client.restorePendingIfEmpty()
-                if (client.pendingSeparate) showPendingError(error)
-                else {
-                    input.setText(client.draft)
-                    input.setSelection(input.length())
+                renderHistory()
+                if (error == null) {
+                    if (follow) toBottom()
+                } else {
+                    sendError.text = error
+                    sendError.visibility = View.VISIBLE
+                    if (!selecting) client.restorePendingIfEmpty()
+                    if (client.pendingSeparate) showPendingError(error)
+                    else {
+                        input.setText(client.draft)
+                        input.setSelection(input.length())
+                    }
                 }
+                generating = false
+                refreshContext()
+                showFile()
+                controls()
+                if (outdated) updater.check()
             }
-            generating = false
-            refreshContext()
-            showFile()
-            controls()
-        })
+        }
+        sendListener = observer
+        ChatSendService.listener = observer
+        try {
+            ChatSendService.launch(this, id)
+        } catch (error: IllegalStateException) {
+            client.endFlight()
+            observer.finished("发送服务未能启动，请重试", false)
+        }
     }
 
     override fun onDestroy() {
+        if (ChatSendService.listener === sendListener) ChatSendService.listener = null
         drawer?.dismiss()
         updater.close()
         client.close()

@@ -22,6 +22,8 @@ test("records accepted mobile turns and restores context after restart", async t
   t.after(() => rmSync(dir,{recursive:true,force:true}));
   const skillBody = capabilityCatalog().skills.find(skill => skill.name === "explicit-memory")!.instructions;
   assert.match(skillBody,/^## /);
+  const upstreamStarted = Promise.withResolvers<void>();
+  const resumeUpstream = Promise.withResolvers<void>();
   const histories: string[][] = [];
   const fileInputs: string[][] = [];
   const fileGroups:string[][][]=[];
@@ -94,6 +96,10 @@ test("records accepted mobile turns and restores context after restart", async t
     assert.equal(payload.service_tier, changed ? "ultrafast" : "default");
     assert.equal(payload.max_output_tokens, 16384);
     histories.push(users);
+    if (users.at(-1) === "detached transport probe") {
+      upstreamStarted.resolve();
+      await resumeUpstream.promise;
+    }
     if (histories.length === 2) {
       res.writeHead(401, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "Test failure" } }));
@@ -281,6 +287,28 @@ test("records accepted mobile turns and restores context after restart", async t
 
   assert.equal((await send("retry count",randomUUID(),randomUUID())).at(-1).done,true);
   assert.ok(transientCounts >= 2);
+
+  const detachedSession = randomUUID(), detachedId = randomUUID();
+  const detachedText = "detached transport probe";
+  const options = {method:"POST",headers:mobile,body:JSON.stringify({session:detachedSession,request:detachedId,text:detachedText})};
+  const abort = new AbortController();
+  const original = await fetch(worker.base+"/chat",{...options,signal:abort.signal});
+  assert.equal(original.status,200);
+  await upstreamStarted.promise;
+  abort.abort();
+  try {
+    const pending = await fetch(worker.base+"/chat",options);
+    assert.equal(pending.status,409);
+    assert.ok(pending.headers.get("retry-after"));
+    await pending.text();
+  } finally { resumeUpstream.resolve(); }
+  for (let i=0;i<100 && db.lookup(detachedSession,detachedId)?.status==="pending";i++)
+    await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(db.lookup(detachedSession,detachedId)?.status,"complete");
+  const replay = (await send(detachedText,detachedId,detachedSession)).at(-1);
+  assert.equal(replay.done,true);
+  assert.equal(replay.answer,db.lookup(detachedSession,detachedId)?.answer);
+  assert.equal(histories.filter(history=>history.at(-1)===detachedText).length,1);
 
   const updated = {model:"gpt-6.2-astra",effort:"max",tier:"ultrafast"};
   assert.deepEqual(await (await setModel(admin,updated)).json(),updated);

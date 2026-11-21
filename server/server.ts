@@ -238,7 +238,10 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const existing = journal.lookup(conversation,request);
   if (existing) {
     if (existing.question !== question || JSON.stringify(journal.turnFiles(Number(existing.id)).map(f=>f.id)) !== JSON.stringify(ids)) return reject(res,409,"消息编号已占用");
-    if (existing.status === "pending") return reject(res,409,"该消息仍在生成，请稍后重试");
+    if (existing.status === "pending") {
+      res.setHeader("Retry-After","3");
+      return reject(res,409,"该消息仍在生成，请稍后重试");
+    }
     if (existing.status === "failed") return reject(res,422,"上次生成中断，请重新发送");
     res.writeHead(200, {"Content-Type":"application/x-ndjson; charset=utf-8"});
     res.end(JSON.stringify({delta:existing.answer}) + "\n" + JSON.stringify({done:true,session:conversation,answer:existing.answer,replyFiles:journal.replyFiles(Number(existing.id))}) + "\n");
@@ -255,7 +258,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   res.flushHeaders();
-  const emit = (event: object) => res.write(JSON.stringify(event) + "\n");
+  const emit = (event: object) => { if (!res.destroyed) res.write(JSON.stringify(event) + "\n"); };
   let failure = "生成失败，请稍后重试";
   let preflightFailure = false;
   const outputs = new ReplyFiles(retention,model.baseUrl,apiKey);
@@ -276,7 +279,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,files,systemPrompt,count,
     tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
   const stop = () => { controller.abort(); agent.abort(); };
-  res.once("close", stop);
+  // The accepted turn belongs to its request ID, including while the phone reconnects.
   const timer = setTimeout(stop, 360000);
   let partial = "";
   const unsubscribe = agent.subscribe(event => {
@@ -304,7 +307,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     const initialMessageCount = agent.state.messages.length;
     await agent.prompt(current);
     const last = agent.state.messages.at(-1);
-    if (res.destroyed || last?.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
+    if (controller.signal.aborted || last?.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       const reason = last?.role === "assistant" ? last.errorMessage ?? "" : "";
       const code = reason.match(/\b(400|401|403|404|429|5[0-9]{2})\b/)?.[1];
       if (!preflightFailure && settings.tier !== "default" && /service.tier|ultrafast|priority|fast mode/i.test(reason)) {
@@ -317,6 +320,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     }
     for (const part of last.content) if (part.type === "text") part.text = search.render(part.text);
     const text = last.content.filter(part => part.type === "text").map(part => part.text).join("");
+    await outputs.deliver(text,controller.signal);
     const answer = replyText(text,outputs.files);
     if (!answer.trim()) throw new Error("Model returned no visible reply");
     if (outputs.files.length) {
@@ -342,10 +346,9 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   } finally {
     clearInterval(heartbeat);
     clearTimeout(timer);
-    res.off("close", stop);
     unsubscribe();
     busy = false;
-    res.end();
+    if (!res.destroyed) res.end();
   }
 }
 async function saveSettings(req: IncomingMessage, res: ServerResponse) {

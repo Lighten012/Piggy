@@ -8,12 +8,15 @@ import { Retention, week } from "./retention.ts";
 export interface ReplyFile {
   key: string; name: string; mime: string; size: number; until: number; remote: string;
 }
-type Citation = {type:string; filename?:string; file_id?:string; container_id?:string};
-type Output = {type:string; id?:string; result?:string; content?:{annotations?:Citation[]}[]};
+type Citation = {type:string; filename?:string; file_id?:string; container_id?:string; start_index:number; end_index:number};
+type FileSource = {filename:string; container_id:string; file_id:string};
+const deliverablePrefix = "sandbox:/mnt/data/deliverables/";
+type Output = {type:string; id?:string; result?:string; content?:{text?:string;annotations?:Citation[]}[]};
 
 // Only consume provider-issued output items and citations, never URLs from assistant prose.
 export class ReplyFiles {
   readonly files: ReplyFile[] = [];
+  private references = new Map<string,FileSource>();
   private seen = new Set<string>();
   private archive: Retention;
   private base: string;
@@ -38,22 +41,41 @@ export class ReplyFiles {
         });
         this.seen.add(item.id);
       }
-      for (const part of item.content ?? []) for (const ref of part.annotations ?? []) {
-        if (ref.type !== "container_file_citation" || !ref.file_id || !ref.container_id || !ref.filename) continue;
-        const source = [ref.container_id,ref.file_id];
-        if (!source.every(id => /^[a-zA-Z0-9_-]+$/.test(id))) throw new Error("生成文件的引用无效");
-        const identity = source.join("/");
-        if (this.seen.has(identity)) continue;
-        await this.save(ref.filename, signal, async path => {
-          const response = await fetch(this.base+"/containers/"+source[0]+"/files/"+source[1]+"/content", {
-            headers:{authorization:"Bearer "+this.apiKey},signal,redirect:"error",
-          });
-          if (!response.ok || !response.body) throw new Error("无法取回生成的文件");
-          const file = await open(path,"wx",0o600);
-          try { await file.writeFile(response.body as AsyncIterable<Uint8Array>); } finally { await file.close(); }
-        });
-        this.seen.add(identity);
+      if (item.type === "message") {
+        for (const part of item.content ?? []) {
+          if (!part.text) continue;
+          const chars = Array.from(part.text);
+          for (const ref of part.annotations ?? []) {
+            if (ref.type !== "container_file_citation" || !ref.container_id || !ref.file_id || !ref.filename ||
+                !Number.isInteger(ref.start_index) || !Number.isInteger(ref.end_index)) continue;
+            const href = chars.slice(ref.start_index,ref.end_index).join("");
+            if (href.startsWith(deliverablePrefix)) {
+              this.references.set(href,{filename:ref.filename,container_id:ref.container_id,file_id:ref.file_id});
+            }
+          }
+        }
       }
+    }
+  }
+
+  async deliver(text:string, signal?:AbortSignal) {
+    // A download needs both a final Markdown link and the provider citation covering that exact URL.
+    for (const match of text.matchAll(/!?\[[^\]]*\]\(<?(sandbox:\/mnt\/data\/deliverables\/(?:[^()<>\n]|\([^()\n]*\))+)>?\)/g)) {
+      const ref = this.references.get(match[1]);
+      if (!ref) throw new Error("无法核对成品文件的引用，请重试。");
+      const source = [ref.container_id,ref.file_id];
+      if (!source.every(id => /^[a-zA-Z0-9_-]+$/.test(id))) throw new Error("生成文件的引用无效");
+      const identity = source.join("/");
+      if (this.seen.has(identity)) continue;
+      await this.save(ref.filename, signal, async path => {
+        const response = await fetch(this.base+"/containers/"+source[0]+"/files/"+source[1]+"/content", {
+          headers:{authorization:"Bearer "+this.apiKey},signal,redirect:"error",
+        });
+        if (!response.ok || !response.body) throw new Error("无法取回生成的文件");
+        const file = await open(path,"wx",0o600);
+        try { await file.writeFile(response.body as AsyncIterable<Uint8Array>); } finally { await file.close(); }
+      });
+      this.seen.add(identity);
     }
   }
 

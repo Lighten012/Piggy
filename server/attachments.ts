@@ -32,7 +32,10 @@ export async function receiveAttachment(req: IncomingMessage, res: ServerRespons
     if (existing.expires <= Date.now()) return reply(410,{error:"附件已过期，请重新选择文件"});
     return reply(200,{id,size:existing.size});
   }
-  if (uploading) return reply(409,{error:"另一份附件正在上传，请稍后重试"});
+  if (uploading) {
+    res.setHeader("Retry-After","3");
+    return reply(409,{error:"附件正在上传，请稍后重试"});
+  }
   uploading = true;
   let dir: string | undefined;
   try {
