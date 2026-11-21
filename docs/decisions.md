@@ -24,7 +24,7 @@
 
 用户主动要求保存时，`save_memory` 接收证据摘录。服务端的独立模型调用先核对授权、从当前会话的主题目录中选出人物与主题，再读取选中主题的成员，提出逐项修改。第一人称使用王子怡，其他人物、否定、时间、程度和条件各自保留。替换已有值、移除成员还会核对旧值与新证据。
 
-SQLite 事务负责应用修改。主题 ID 和成员 ID 稳定，`memory_members.turn_id` 指向每项的最近确认，`memory_changes` 记录历次证据。同一轮同一摘录重复提交可复用结果。工作上下文压缩与这些表独立。用户要求列全时，`read_memory_topic` 分页读取目录和成员，再用成员的来源轮次回查聊天。实现见[主题存储](../server/memory-topics.ts)和[记忆整理](../server/memory-planner.ts)。
+SQLite 事务负责应用修改。主题 ID 和成员 ID 稳定，`memory_members.turn_id` 指向每项的最近确认，`memory_changes` 记录历次证据。同一轮同一摘录重复提交可复用结果。工作上下文压缩与这些表独立。用户要求列全时，`list_memory_topics` 分页列目录，`read_memory_topic` 按返回的编号读成员，再用成员的来源轮次回查聊天。实现见[主题存储](../server/memory-topics.ts)和[记忆整理](../server/memory-planner.ts)。
 
 ## 附件保留七天，文档在手机上排版
 

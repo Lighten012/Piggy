@@ -11,7 +11,7 @@ description: 用户明确要求记住时，将证据整理到可持续更新的�
 
 ## 读取完整清单与来源
 
-- 用户问“我喜欢哪些水果”或要求列全时，调用 `read_memory_topic` 列出目录，按返回的 `topicId` 读取相关主题。目录与成员都有分页，按 `nextAfter` 续读直到结束，再回答全部适用项目。不同条件、人物和否定必须分别核对。
+- 用户问“我喜欢哪些水果”或要求列全时，先用 `list_memory_topics({"after":0})` 列目录，选中相应人物与主题后用 `read_memory_topic` 读取成员，首次的 `after` 传 0。只使用实际返回的主题编号。每次只在 `complete` 为 false 时使用 `nextAfter` 翻页。目录和相关主题都读完即可回答。不同条件、人物和否定必须分别核对。
 - 每项的 `turnId` 是最近一次确认该项的来源。用户问出处时，按该编号调用 `read_chat_context`，将 `source` 设为 `turn`。
 - 用户需要推荐或模糊线索时，用 `search_memory` 对本会话的 OpenAI 向量库做语义检索，必要时按主题编号读全。索引等待时优先读 SQLite 目录；旧记忆迁移未完时说明清单可能不完整。
 - 需要追溯更早的变化或记忆仍不足时，用 `search_chat_history` 和 `read_chat_context` 回查原始聊天。区分已确认记忆与过去聊天中提过的事。

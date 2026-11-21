@@ -42,6 +42,8 @@ test("topic membership, pagination, source changes, replay and isolation",()=>{
   const first=save("一批水果",Array.from({length:57},(_,i)=>set("水果"+i)));
   const page=t.page("a",first.id);
   assert.equal(page.entries.length,50);
+  assert.equal(page.complete,false);
+  assert.equal(t.page("a",first.id,Number(page.nextAfter)).complete,true);
   assert.equal(t.page("a",first.id,Number(page.nextAfter)).entries.length,7);
   const confirmed=save("再记一次", [set("水果0")]);
   const conditional=save("只喜欢冰过的水果1",[set("水果1","仅冰过的水果1")]);

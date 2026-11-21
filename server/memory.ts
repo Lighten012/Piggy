@@ -16,9 +16,14 @@ export const searchMemoryDeclaration = {
     required:["query"],additionalProperties:false},
 } as const;
 
+const afterParameter={type:"integer",minimum:0,description:"首次传 0，后续传 nextAfter。"} as const;
+export const listTopicsDeclaration = {
+  name:"list_memory_topics",description:"列出当前会话的记忆主题 ID、人物和名称。第一次查某主题先用此工具。complete 为 true 表示目录已读完。",
+  parameters:{type:"object",properties:{after:afterParameter},required:["after"],additionalProperties:false},
+} as const;
 export const readTopicDeclaration = {
-  name:"read_memory_topic",description:"从 SQLite 列举当前会话的主题，或按 topicId 分页读出完整成员和各自的来源 turnId。省略 topicId 列目录，nextAfter 用于续页。",
-  parameters:{type:"object",properties:{topicId:{type:"integer",minimum:1},after:{type:"integer",minimum:0}},additionalProperties:false},
+  name:"read_memory_topic",description:"按目录或向量结果给出的 topicId 读取主题成员和来源 turnId。complete 为 true 时该主题已读完。",
+  parameters:{type:"object",properties:{topicId:{type:"integer",minimum:1},after:afterParameter},required:["topicId","after"],additionalProperties:false},
 } as const;
 
 export const searchChatDeclaration = {
@@ -40,6 +45,9 @@ export function memoryReadTools(journal:Journal, index:MemoryIndex, conversation
     {...searchMemoryDeclaration,label:"查找记忆", async execute(_id,params,signal) {
       const {query} = params as {query:string};
       return result({...await index.search(conversation,query,signal),migrationPending:!!journal.topics.nextLegacy(conversation)});
+    }},
+    {...listTopicsDeclaration,label:"列出记忆主题",async execute(_id,params) {
+      return result(journal.topics.page(conversation,undefined,(params as {after:number}).after));
     }},
     {...readTopicDeclaration,label:"读取完整记忆主题",async execute(_id,params) {
       const {topicId,after}=params as {topicId?:number;after?:number};

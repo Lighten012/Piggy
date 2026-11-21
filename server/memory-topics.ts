@@ -48,13 +48,14 @@ export class MemoryTopics {
       .all(conversation);
   }
   page(conversation:string,topicId?:number,after=0) {
+    const topic=topicId===undefined ? undefined : this.db.prepare("SELECT id AS topicId,subject,label FROM memory_topics WHERE conversation=? AND id=?").get(conversation,topicId);
     const rows=topicId === undefined ? this.db.prepare(`SELECT id AS topicId,subject,label FROM memory_topics
         WHERE conversation=? AND content<>'' AND id>? ORDER BY id LIMIT ?`).all(conversation,after,pageSize+1) :
       this.db.prepare(`SELECT m.id AS memberId,m.key,m.value,m.turn_id AS turnId FROM memory_members m JOIN memory_topics t
         ON t.id=m.topic WHERE t.conversation=? AND t.id=? AND m.active=1 AND m.id>? ORDER BY m.id LIMIT ?`)
         .all(conversation,topicId,after,pageSize+1);
     const entries=rows.slice(0,pageSize);
-    return {entries,nextAfter:rows.length>pageSize ? entries.at(-1)!.memberId??entries.at(-1)!.topicId : undefined,
+    return {topic,entries,complete:rows.length<=pageSize,nextAfter:rows.length>pageSize ? entries.at(-1)!.memberId??entries.at(-1)!.topicId : null,
       migrationPending:!!this.nextLegacy(conversation)};
   }
   members(conversation:string,group:TopicKey) {
