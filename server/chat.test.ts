@@ -23,6 +23,8 @@ test("records accepted mobile turns and restores context after restart", async t
   const fileInputs: string[][] = [];
   const summaries:string[] = [];
   let summaryUnavailable = false;
+  let transientCounts = 0;
+  let unavailableCounts = 0;
   const fixture = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -57,7 +59,8 @@ test("records accepted mobile turns and restores context after restart", async t
       assert.equal(replies.length,100);
     }
     if (req.url === "/v1/responses/input_tokens") {
-      if (users.at(-1) === "unknown") { res.writeHead(503); res.end(); return; }
+      if (users.at(-1) === "unknown") unavailableCounts++;
+      if (users.at(-1) === "unknown" || (users.at(-1) === "retry count" && ++transientCounts === 1)) { res.writeHead(503); res.end(); return; }
       const tokens = users.includes("old-marker") ? (users.includes("large attachment question") ? limit + 1200 :
         users.includes("soft threshold") ? threshold + 1 : belowThreshold) : users.at(-1) === "overflow" ? limit + 1 : users.at(-1) === "exact" ? limit : users.length + 10;
       res.writeHead(200,{"content-type":"application/json"});
@@ -160,6 +163,7 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.ok(over.at(-1).error.includes((limit + 1).toLocaleString("en-US")));
   assert.ok(over.at(-1).error.includes("超过 " + limit.toLocaleString("en-US") + " 上限"));
   assert.match((await send("unknown")).at(-1).error,/核对上下文/);
+  assert.equal(unavailableCounts,2);
   assert.equal(histories.length,calls);
   assert.equal((await send("exact")).at(-1).done,true);
 
@@ -240,6 +244,9 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.equal((await send("帮我记一下刚才那条",randomUUID(),secondPhone)).at(-1).done,true);
   assert.deepEqual(entries(),[[firstPhone,"只喝温水"],[secondPhone,"只喝温水"]]);
   memoryDb.close();
+
+  assert.equal((await send("retry count",randomUUID(),randomUUID())).at(-1).done,true);
+  assert.ok(transientCounts >= 2);
 
   const updated = {model:"gpt-6.2-astra",effort:"max",tier:"ultrafast"};
   assert.deepEqual(await (await setModel(admin,updated)).json(),updated);

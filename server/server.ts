@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { contextLimit, ContextError, prepareHistory, summarize } from "./compaction.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -81,6 +82,18 @@ async function countInput(model: Model<"openai-responses">, input: unknown[], to
   const { input_tokens: used } = await response.json();
   if (!Number.isSafeInteger(used) || used < 0) throw new Error("Invalid input count");
   return {used, limit:contextLimit};
+}
+async function countChatInput(model:Model<"openai-responses">, input:unknown[], tools:unknown[], signal?:AbortSignal) {
+  try {
+    return await countInput(model,input,tools,signal);
+  } catch (error) {
+    signal?.throwIfAborted();
+    const temporary = error instanceof TypeError || error instanceof Error &&
+      (error.name === "TimeoutError" || /^Input count HTTP (408|5\d\d)$/.test(error.message));
+    if (!temporary) throw error;
+  }
+  await delay(300,undefined,{signal});
+  return countInput(model,input,tools,signal);
 }
 function toolFileIds(conversation: string, files: Attachment[]) {
   const previous = journal.previousOutputs(conversation).filter(f => f.until > Date.now());
@@ -228,7 +241,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   let cache: {input:unknown[]; tools:unknown[]; usage:ContextUsage} | undefined;
   async function count(input:unknown[], tools:unknown[], signal?:AbortSignal) {
     if (cache && isDeepStrictEqual(input,cache.input) && isDeepStrictEqual(tools,cache.tools)) return cache.usage;
-    const usage = await countInput(model,input,tools,signal);
+    const usage = await countChatInput(model,input,tools,signal);
     cache = {input,tools,usage};
     return usage;
   }

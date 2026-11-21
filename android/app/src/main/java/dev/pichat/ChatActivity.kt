@@ -49,6 +49,7 @@ class ChatActivity : Activity() {
     private lateinit var updater: AppUpdater
 
     private lateinit var contextMeter: ContextMeter
+    private var contextEpoch = 0L
     private var readingContext = false
     private var versionCurrent = false
     private var selecting = false
@@ -231,6 +232,7 @@ class ChatActivity : Activity() {
         root.addView(gate, LinearLayout.LayoutParams(match, 0, 1f))
         setContentView(root)
         client = PiggyClient(this) { updater.check() }
+        client.lastUsage?.let(contextMeter::update)
         updater = AppUpdater(this, ::showVersion)
         val recent = client.recent
         for (i in 0 until recent.length()) {
@@ -378,19 +380,30 @@ class ChatActivity : Activity() {
         clipToOutline = true
     }
 
+    private fun displayUsage(value: ContextUsage) {
+        if (contextMeter.usage == value) return
+        client.rememberUsage(value)
+        contextMeter.update(value)
+    }
+
     private fun refreshContext() {
         if (readingContext || !versionCurrent || generating) return
+        val epoch = contextEpoch
         readingContext = true
         client.readContext { value ->
             readingContext = false
-            if (!generating) contextMeter.update(value)
+            if (epoch == contextEpoch) {
+                if (value != null) displayUsage(value)
+            } else if (!generating) {
+                refreshContext()
+            }
         }
     }
 
     private fun showContext() {
         val usage = contextMeter.usage
         val detail = usage?.detail ?: if (readingContext) "正在读取用量…" else "暂时无法读取用量"
-        val scope = if (generating) "本次发送的输入用量。" else
+        val scope = if (generating) "显示最近一次成功同步的用量，收到本轮计数后更新。" else
             "包含系统提示词、最近的对话和仍在使用的附件。草稿和新选的附件会在发送时计入。"
         AlertDialog.Builder(this).setTitle("上下文用量").setMessage(detail + "\n\n" + scope)
             .setPositiveButton("知道了", null).apply {
@@ -568,7 +581,7 @@ class ChatActivity : Activity() {
         if (message.isEmpty() || !send.isEnabled) return
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         generating = true
-        contextMeter.update(null)
+        contextEpoch++
         controls()
         sendError.visibility = View.GONE
         input.setText("")
@@ -585,7 +598,7 @@ class ChatActivity : Activity() {
             renderMessage(reply, source.toString())
             if (follow) toBottom()
         }
-        client.send(message, draft, uploaded = { reply.hint = "正在回复…" }, measured = contextMeter::update, delta = { part ->
+        client.send(message, draft, uploaded = { reply.hint = "正在回复…" }, measured = ::displayUsage, delta = { part ->
             reply.hint = ""
             source.append(part)
             if (!scheduled) {
@@ -610,7 +623,6 @@ class ChatActivity : Activity() {
                 input.setSelection(input.length())
             }
             generating = false
-            contextMeter.update(null)
             refreshContext()
             showFile()
             controls()

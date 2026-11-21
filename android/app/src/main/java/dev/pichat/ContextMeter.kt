@@ -38,13 +38,14 @@ class ContextMeter(context: Context) : TextView(context) {
         val style = android.util.TypedValue()
         context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, style, true)
         setBackgroundResource(style.resourceId)
-        update(null)
+        text = "—"
+        contentDescription = "上下文用量，暂未获取，查看详情"
     }
 
-    fun update(value: ContextUsage?) {
+    fun update(value: ContextUsage) {
         usage = value
-        text = value?.percent ?: "—"
-        contentDescription = "上下文用量，" + (value?.detail ?: "暂未获取") + "，查看详情"
+        text = value.percent
+        contentDescription = "上下文用量，" + value.detail + "，查看详情"
         invalidate()
     }
 

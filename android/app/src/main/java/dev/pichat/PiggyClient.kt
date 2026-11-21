@@ -11,20 +11,32 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 
 class PiggyClient(private val activity: Activity, private val outdated: () -> Unit) {
     private val worker = Executors.newSingleThreadExecutor()
+    private val contextWorker = Executors.newSingleThreadExecutor()
     private val endpoint = PiggyServer.url("/mobile/chat")
     @Volatile private var closed = false
-    @Volatile private var connection: HttpsURLConnection? = null
+    private val connections = ConcurrentHashMap.newKeySet<HttpsURLConnection>()
     private val prefs = activity.getSharedPreferences("conversation", Activity.MODE_PRIVATE)
     private val session = prefs.getString("session", null) ?: UUID.randomUUID().toString().also {
         prefs.edit().putString("session", it).commit()
     }
     val recent: JSONArray get() = JSONArray(prefs.getString("recent", "[]"))
     val draft: String get() = prefs.getString("pendingDraft", prefs.getString("pendingText", "")).orEmpty()
+
+    val lastUsage: ContextUsage? get() {
+        val used = prefs.getInt("contextUsed", -1)
+        val limit = prefs.getInt("contextLimit", 0)
+        return if (used >= 0 && limit > 0) ContextUsage(used, limit) else null
+    }
+
+    fun rememberUsage(value: ContextUsage) {
+        prefs.edit().putInt("contextUsed", value.used).putInt("contextLimit", value.limit).apply()
+    }
 
     companion object {
         const val MAX_FILES = 4
@@ -116,7 +128,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
 
     private fun post(url: URL, write: (HttpsURLConnection) -> Unit, consume: (HttpsURLConnection) -> Unit) {
         val http = url.openConnection() as HttpsURLConnection
-        connection = http
+        connections.add(http)
         try {
             if (closed) throw IOException("连接已关闭")
             http.requestMethod = "POST"
@@ -129,7 +141,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             val status = http.responseCode
             if (status !in 200..299) {
                 if (status == 426) ui(outdated)
-                if (status == 422) prefs.edit().remove("pendingId").commit()
+                if (status == 422 && url == endpoint) prefs.edit().remove("pendingId").commit()
                 val detail = http.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
                 val message = runCatching { JSONObject(detail).getString("error") }.getOrNull()
                 throw IOException(message ?: if (status == 413) "每个附件最多 10 MB" else "服务器返回 HTTP $status")
@@ -137,7 +149,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             consume(http)
         } finally {
             http.disconnect()
-            connection = null
+            connections.remove(http)
         }
     }
 
@@ -169,7 +181,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         return ContextUsage(used, limit)
     }
 
-    fun readContext(finished: (ContextUsage?) -> Unit) = worker.execute {
+    fun readContext(finished: (ContextUsage?) -> Unit) = contextWorker.execute {
         var current: ContextUsage? = null
         runCatching {
             post(PiggyServer.url("/mobile/context"), { http ->
@@ -214,8 +226,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                         if (line.isBlank()) continue
                         val event = JSONObject(line)
                         event.optJSONObject("context")?.let {
-                            val value = usage(it)
-                            ui { measured(value) }
+                            runCatching { usage(it) }.getOrNull()?.let { value -> ui { measured(value) } }
                         }
                         if (event.has("error")) {
                             prefs.edit().remove("pendingId").commit()
@@ -314,7 +325,8 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
 
     fun close() {
         closed = true
-        connection?.disconnect()
+        connections.forEach { it.disconnect() }
+        contextWorker.shutdownNow()
         worker.shutdownNow()
         downloads.shutdown()
     }
