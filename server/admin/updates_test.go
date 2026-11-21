@@ -172,3 +172,24 @@ func TestPublishedEngineMatchesHTTPRanges(t *testing.T) {
 		t.Fatal("reconstructed APK differs")
 	}
 }
+
+func TestReleaseEnvironmentsRejectEachOthersPackages(t *testing.T) {
+	previous := releaseEnvironment
+	t.Cleanup(func() { releaseEnvironment = previous })
+	for _, env := range []string{"production", "staging"} {
+		releaseEnvironment = env
+		c := currentDeployment()
+		dir := t.TempDir()
+		for _, pkg := range []string{"dev.pichat", "dev.pichat.staging"} {
+			meta := androidRelease{Package: pkg, Code: 23, Name: "test", MinSDK: 24, Size: 1, SHA: strings.Repeat("a", 64), Signer: strings.Repeat("b", 64)}
+			data, _ := json.Marshal(meta)
+			if err := os.WriteFile(filepath.Join(dir, "latest.json"), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readRelease(dir)
+			if (err == nil) != (c.androidPackage == pkg) {
+				t.Fatalf("%s accepted wrong package selection: %s", env, pkg)
+			}
+		}
+	}
+}

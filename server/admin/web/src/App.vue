@@ -5,6 +5,9 @@ import Capabilities from "./Capabilities.vue";
 import MarkdownMessage from "./MarkdownMessage.vue";
 import piggyMark from "../../../../android/app/src/main/res/drawable-nodpi/piggy_portrait.webp?no-inline";
 
+const appName = import.meta.env.VITE_PIGGY_ENVIRONMENT === "staging" ? "Piggy 测试版" : "Piggy";
+document.title = appName + " · 管理端";
+
 function currentView() { return location.hash === "#capabilities" ? "capabilities" : "history"; }
 const view = ref(currentView());
 async function navigate() {
@@ -75,7 +78,7 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
 </script>
 <template>
   <header class="masthead"><div class="bar">
-    <div class="brand"><img class="piggy-avatar" :src="piggyMark" alt="" width="44" height="44"><span>Piggy</span></div>
+    <div class="brand"><img class="piggy-avatar" :src="piggyMark" alt="" width="44" height="44"><span>{{ appName }}</span></div>
     <nav aria-label="管理端导航">
       <a href="#history" :aria-current="view === 'history' ? 'page' : undefined">对话记录</a>
       <a href="#capabilities" :aria-current="view === 'capabilities' ? 'page' : undefined">Agent 能力</a>

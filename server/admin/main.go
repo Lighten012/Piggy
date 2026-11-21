@@ -104,6 +104,26 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 	})
 }
 
+// Embedded in the gateway so its service and publish-android command always
+// agree on the package, ports and default update directory.
+var releaseEnvironment = "production"
+
+type deployment struct {
+	root, androidPackage, gatewayAddr, workerAddr string
+}
+
+func currentDeployment() deployment {
+	switch releaseEnvironment {
+	case "production":
+		return deployment{"/lighten012/projects/Piggy", "dev.pichat", "127.0.0.1:18888", "127.0.0.1:18889"}
+	case "staging":
+		return deployment{"/lighten012/projects/Piggy-staging", "dev.pichat.staging", "127.0.0.1:18988", "127.0.0.1:18989"}
+	default:
+		log.Fatalf("invalid release environment %q", releaseEnvironment)
+		return deployment{}
+	}
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		if len(os.Args) != 3 || os.Args[1] != "publish-android" {
@@ -119,7 +139,8 @@ func main() {
 	if password == "" || workerToken == "" {
 		log.Fatal("missing service configuration")
 	}
-	target, _ := url.Parse("http://127.0.0.1:18889")
-	server := http.Server{Addr: "127.0.0.1:18888", Handler: gateway(password, workerToken, target, http.FileServer(http.Dir("web/dist"))), ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 390 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 * 1024}
+	config := currentDeployment()
+	target, _ := url.Parse("http://" + config.workerAddr)
+	server := http.Server{Addr: config.gatewayAddr, Handler: gateway(password, workerToken, target, http.FileServer(http.Dir("web/dist"))), ReadHeaderTimeout: 15 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 390 * time.Second, IdleTimeout: 45 * time.Second, MaxHeaderBytes: 16 * 1024}
 	log.Fatal(server.ListenAndServe())
 }

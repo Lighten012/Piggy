@@ -22,7 +22,7 @@ signers = re.findall(r"^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]{64})$"
 badges = run("aapt", "dump", "badging")
 pkg = re.search(r"^package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'", badges, re.M)
 sdk = re.search(r"^sdkVersion:'(\d+)'", badges, re.M)
-if len(signers) != 1 or not pkg or pkg[1] != "dev.pichat" or not sdk:
+if len(signers) != 1 or not pkg or pkg[1] not in ("dev.pichat", "dev.pichat.staging") or not sdk:
     parser.error("expected a signed Piggy APK with a valid version and minSdk")
 meta = dict(packageName=pkg[1], versionCode=int(pkg[2]), versionName=pkg[3], minSdk=int(sdk[1]),
             size=artifact.stat().st_size, sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),

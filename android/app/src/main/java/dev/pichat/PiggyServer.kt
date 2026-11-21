@@ -3,6 +3,6 @@ package dev.pichat
 import java.net.URL
 
 object PiggyServer {
-    const val ORIGIN = "https://38.14.232.112:8888"
+    val ORIGIN = BuildConfig.SERVER_ORIGIN
     fun url(path: String) = URL(ORIGIN + path)
 }

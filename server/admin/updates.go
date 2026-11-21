@@ -75,7 +75,7 @@ func readRelease(dir string) (androidRelease, error) {
 	if err = json.Unmarshal(data, &r); err != nil {
 		return r, err
 	}
-	if r.Package != "dev.pichat" || r.Code <= 0 || r.Name == "" || r.MinSDK <= 0 || r.Size <= 0 || r.Size > maxAPKBytes || !shaPattern.MatchString(r.SHA) || !shaPattern.MatchString(r.Signer) {
+	if r.Package != currentDeployment().androidPackage || r.Code <= 0 || r.Name == "" || r.MinSDK <= 0 || r.Size <= 0 || r.Size > maxAPKBytes || !shaPattern.MatchString(r.SHA) || !shaPattern.MatchString(r.Signer) {
 		return r, errors.New("invalid Android release manifest")
 	}
 	return r, nil
@@ -85,7 +85,7 @@ func updateDirectory() string {
 	if dir := os.Getenv("PIGGY_UPDATES_DIR"); dir != "" {
 		return dir
 	}
-	return "/lighten012/projects/Piggy/updates/android"
+	return filepath.Join(currentDeployment().root, "updates/android")
 }
 
 var alternateABIs = []string{"armeabi-v7a", "x86", "x86_64"}

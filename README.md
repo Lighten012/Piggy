@@ -11,6 +11,22 @@ Android 在同一段对话中持续发送消息，由美国 CVM 上的 Pi Agent 
 
 服务端在调用模型前写入提问，结束时保存回复或失败状态。服务中断遗留的进行中记录在启动时标记失败。完整记录存储在 `/var/lib/piggy-journal/chat.sqlite`，使用 SQLite WAL，可跨发布和服务重启保留。只有登录后的网页可以读取完整记录。手机保留本次安装的对话编号和最近 40 轮成功问答，重新打开可继续。网页从 turns 表读取聊天原文。模型和圆环读取独立的 active_context 表，按顺序使用该对话的全部工作上下文。每轮成功后，原文和新增上下文在同一个事务中保存。首次升级时一次性导入已有成功轮次的上下文。聊天顶栏的圆环按 300,000 个输入 token 显示用量，点击可查看明细。服务端在每次生成前对实际 Responses 输入（含附件）调用 OpenAI 计数，超限或计数失败时保留草稿并提示。手机清除数据或重装后，网页仍保留服务器上的记录，手机的本地记录和对话编号会重置。
 
+## 正式环境与测试环境
+
+| | 正式 Piggy | Piggy 测试版 |
+|---|---|---|
+| 手机与管理页 HTTPS 端口 | 8888 | 8889 |
+| Android 包名 | dev.pichat | dev.pichat.staging |
+| 网关 / Pi 本机端口 | 18888 / 18889 | 18988 / 18989 |
+| 部署根目录 | /lighten012/projects/Piggy | /lighten012/projects/Piggy-staging |
+| SQLite 和七天附件目录 | /var/lib/piggy-journal | /var/lib/piggy-staging-journal |
+
+日常构建默认选择测试环境。测试版安装在独立的 Android 应用空间，聊天、文件预览、网页管理和应用内更新都使用 8889。测试 APK 下载地址为 `https://38.14.232.112:8889/updates/android/Piggy.apk`。每个环境的 Go 发布器只接受对应的 Android 包名。各环境分别校验自己的最新版本。
+
+开发时在新的空输出目录构建服务端，运行 `server/admin/build-release.sh /path/to/staging-release staging`。将产物放入测试根目录的 `releases/<revision>`，校验 `ENVIRONMENT` 和 `REVISION` 后切换该环境的 `current`。测试根目录使用自己的 `runtime/node`、`server.env`、管理员密码和内部令牌。安装生成的 `piggy-staging-pi.service` 和 `piggy-staging-admin.service`，使用对应的 Nginx 示例及主机现有的 TLS 证书。调用该目录下的 `current/piggy-admin publish-android` 发布测试 APK，默认写入测试根目录的 `updates/android`。独立设置 `PI_API_KEY` 可分开上游配额。
+
+正式发布时从选定并已验证的提交重新构建，Gradle 显式指定 `-PpiggyEnvironment=production`，服务端脚本第二个参数显式指定 `production`。对正式根目录执行发布，保留该环境的配置、聊天数据库和附件。Android 发布版本号按各自通道递增。
+
 ## Android
 
 使用 JDK 17、Android SDK 36 和仓库内的 Gradle Wrapper。
@@ -48,7 +64,7 @@ Go 将匿名、带版本号的 `POST /mobile/attachments` 流式转给 Pi。Pi �
 
 ## CVM 部署
 
-在开发机运行 `server/admin/build-release.sh /path/to/output` 构建 Vue 静态文件、Linux x86-64 Go 程序和服务端 Pi bundle。将发布目录放到 `/lighten012/projects/Piggy/releases/<revision>`，让 `current` 指向该版本。在 `runtime/node` 安装 Node.js 24。使用仅 root 可读的 `server.env` 配置以下变量。
+正式部署时，在开发机运行 `server/admin/build-release.sh /path/to/output production` 构建 Vue 静态文件、Linux x86-64 Go 程序和服务端 Pi bundle。将发布目录放到 `/lighten012/projects/Piggy/releases/<revision>`，让 `current` 指向该版本。在 `runtime/node` 安装 Node.js 24。使用仅 root 可读的 `server.env` 配置以下变量。
 
 | 变量 | 用途 |
 |---|---|

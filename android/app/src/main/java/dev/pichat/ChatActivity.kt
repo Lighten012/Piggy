@@ -112,7 +112,7 @@ class ChatActivity : Activity() {
         menu = navButton(R.drawable.nav_menu, "打开侧边栏") { showDrawer() }
         header.addView(menu, dp(48), dp(48))
         header.addView(mark(), LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(3) })
-        header.addView(text("Piggy", 18f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
+        header.addView(text(getString(R.string.app_name), 18f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
             LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(8) })
         header.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         contextMeter = ContextMeter(this).apply { setOnClickListener { showContext() } }
@@ -260,7 +260,7 @@ class ChatActivity : Activity() {
         ViewCompat.setAccessibilityPaneTitle(panel, "侧边栏")
         val heading = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         heading.addView(mark(), dp(36), dp(36))
-        heading.addView(text("Piggy", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
+        heading.addView(text(getString(R.string.app_name), 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
             LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(10) })
         heading.addView(navButton(R.drawable.nav_close, "关闭侧边栏") { dialog.dismiss() }, dp(48), dp(48))
         panel.addView(heading, match, wrap)
