@@ -8,7 +8,9 @@ import { readFileSync } from "node:fs";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createModels, type Model } from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
-import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
+import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+import type { Message } from "@earendil-works/pi-ai";
 
 const host = process.env.HOST || "127.0.0.1";
 const workerToken = process.env.PIGGY_WORKER_TOKEN;
@@ -26,6 +28,7 @@ void cleanAttachments();
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const workerAuth = digest("Bearer " + workerToken);
 let busy = false;
+let readingContext = false;
 
 function memoryUnderPressure() {
   if (process.platform !== "linux") return false;
@@ -54,28 +57,67 @@ const fixturePort = process.env.PI_LOCAL_FIXTURE_PORT;
 if (fixturePort && (!/^\d{1,5}$/.test(fixturePort) || process.env.PI_API_KEY)) {
   throw new Error("The local fixture requires a port and an empty PI_API_KEY.");
 }
-const model: Model<"openai-completions"> = {
-  ...selected, api: "openai-completions", compat: undefined,
+const model: Model<"openai-responses"> = {
+  ...selected, api: "openai-responses", compat: undefined,
   baseUrl: fixturePort ? `http://127.0.0.1:${fixturePort}/v1` : "https://api.openai.com/v1",
 };
 const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
 const thinkingLevel = model.id === sol.id ? "high" : "off";
-const responsesModel: Model<"openai-responses"> = { ...model, api:"openai-responses", compat:undefined };
-function newAgent(files: Attachment[]) {
+const contextLimit = 300_000;
+const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。";
+function addFiles(input: unknown[], files: Attachment[]) {
+  if (!files.length) return;
+  const user = input.findLast((item): item is {role:"user"; content:unknown} =>
+    typeof item === "object" && item !== null && "role" in item && item.role === "user");
+  if (!Array.isArray(user?.content)) throw new Error("Missing attachment message");
+  for (const file of files) user.content.push(file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} :
+    {type:"input_file",file_id:file.remote});
+}
+async function countInput(input: unknown[], signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(20000);
+  const response = await fetch(model.baseUrl + "/responses/input_tokens", {
+    method: "POST", headers: {authorization: "Bearer " + apiKey, "content-type": "application/json"},
+    body: JSON.stringify({model:model.id, input}), signal: signal ? AbortSignal.any([signal,timeout]) : timeout,
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error("Input count HTTP " + response.status);
+  }
+  const { input_tokens: used } = await response.json();
+  if (!Number.isSafeInteger(used) || used < 0) throw new Error("Invalid input count");
+  return {used, limit:contextLimit};
+}
+function promptForFiles(stored: number, available: number) {
+  return persona + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
+}
+type ContextUsage = Awaited<ReturnType<typeof countInput>>;
+function newAgent(files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["previous"]>,
+    measured: (usage: ContextUsage) => void,
+    rejectGeneration: (message: string) => void) {
   return new Agent({
-    initialState: { systemPrompt: "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。", model: files.length ? responsesModel : model, thinkingLevel },
+    initialState: { systemPrompt, messages, model, thinkingLevel },
     getApiKey: () => apiKey,
-    streamFn: (_model, context, options) => {
-      const settings = { ...options, maxTokens: thinkingLevel === "high" ? 16384 : 2048, maxRetries: 0 };
-      if (!files.length) return streamSimple(model, context, settings);
-      return streamResponses(responsesModel, context, { ...settings, onPayload(payload) {
-        const body = payload as { input: {role?: string; content: unknown[]}[] };
-        const user = body.input.findLast(item => item.role === "user");
-        if (!user || !Array.isArray(user.content)) throw new Error("Missing attachment message");
-        for (const file of files) user.content.push(file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} :
-          {type:"input_file",file_id:file.remote});
-      }});
-    },
+    streamFn: (_model, context, options) => streamResponses(model, context, {
+      ...options, maxTokens: thinkingLevel === "high" ? 16384 : 2048, maxRetries: 0,
+      async onPayload(payload) {
+        const {input} = payload as {input: {role?:string; content?:unknown}[]};
+        addFiles(input, files);
+        let usage: ContextUsage;
+        try { usage = await countInput(input, options?.signal); }
+        catch (error) {
+          rejectGeneration(files.length && error instanceof Error && /HTTP (400|404|415|422)$/.test(error.message)
+            ? "无法统计此附件的上下文，请减少附件内容或更换文件后重试"
+            : "暂时无法核对上下文用量，请稍后重试");
+          throw error;
+        }
+        measured(usage);
+        if (usage.used > usage.limit) {
+          const message = `本次输入共 ${usage.used.toLocaleString("en-US")} tokens，超过 300,000 上限，请缩短消息或减少附件。`;
+          rejectGeneration(message);
+          throw new Error(message);
+        }
+      },
+    }),
   });
 }
 function reject(res: ServerResponse, status: number, error: string) {
@@ -83,7 +125,8 @@ function reject(res: ServerResponse, status: number, error: string) {
   res.end(JSON.stringify({ error }));
 }
 async function chat(req: IncomingMessage, res: ServerResponse) {
-  if (req.url !== "/chat" || req.method !== "POST") return reject(res, 404, "未知请求");
+  const preview = req.url === "/context";
+  if ((!preview && req.url !== "/chat") || req.method !== "POST") return reject(res, 404, "未知请求");
   if (req.headers["content-type"]?.split(";")[0] !== "application/json") {
     return reject(res, 415, "请使用 JSON 请求");
   }
@@ -98,6 +141,27 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   let data;
   try { data = JSON.parse(Buffer.concat(chunks).toString()); }
   catch { return reject(res, 400, "请求格式有误"); }
+  if (preview) {
+    if (typeof data?.session !== "string" || !uuid.test(data.session)) return reject(res,400,"对话编号无效");
+    if (!fixturePort && memoryUnderPressure()) return reject(res,503,"服务器可用内存不足");
+    if (readingContext) return reject(res,503,"上下文用量正在读取，请稍后重试");
+    readingContext = true;
+    try {
+      const stored = journal.latestFiles(data.session);
+      const files = stored.filter((file): file is Attachment => !!file && file.expires > Date.now());
+      const messages = journal.previous(data.session) as Message[];
+      if (files.length) messages.push({role:"user",content:[{type:"text",text:""}],timestamp:Date.now()});
+      const input = convertResponsesMessages(model, normalizeContext({
+        systemPrompt:promptForFiles(stored.length, files.length), messages
+      }), new Set(["openai"]));
+      addFiles(input,files);
+      const usage = await countInput(input);
+      res.writeHead(200,{"Content-Type":"application/json"});
+      res.end(JSON.stringify(usage));
+    } catch { reject(res,503,"上下文用量暂时无法读取"); }
+    finally { readingContext = false; }
+    return;
+  }
   const ids: unknown = data?.attachments ?? (data?.attachment == null ? [] : [data.attachment]);
   if (!Array.isArray(ids) || ids.length > 4 || new Set(ids).size !== ids.length ||
       ids.some(id => typeof id !== "string" || !uuid.test(id)) || (ids.length && !data.session) ||
@@ -124,19 +188,19 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   if (stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
   const files = stored.filter((f): f is Attachment => !!f && f.expires > Date.now());
   if (ids.length && files.length !== ids.length) return reject(res,410,"附件已过期，请重新选择");
-  const agent = newAgent(files);
-  if (files.length !== stored.length) agent.state.systemPrompt += " 部分附件已过期；如需原文，请用户重新上传。";
-  agent.state.messages = journal.previous(conversation);
   const id = journal.begin(conversation,request,question,ids);
   busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   res.flushHeaders();
   const emit = (event: object) => res.write(JSON.stringify(event) + "\n");
+  let failure = "生成失败，请稍后重试";
+  let preflightFailure = false;
+  const agent = newAgent(files,promptForFiles(stored.length,files.length),journal.previous(conversation),
+    context => emit({context}), message => { failure = message; preflightFailure = true; });
   const stop = () => agent.abort();
   res.once("close", stop);
   const timer = setTimeout(stop, 110000);
   let partial = "";
-  let failure = "生成失败，请稍后重试";
   const unsubscribe = agent.subscribe(event => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       partial += event.assistantMessageEvent.delta;
@@ -151,7 +215,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     if (res.destroyed || last?.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       const reason = last?.role === "assistant" ? last.errorMessage ?? "" : "";
       const code = reason.match(/\b(400|401|403|404|429|5[0-9]{2})\b/)?.[1];
-      if (files.length && (code === "400" || code === "404" || code === "415" || code === "422")) {
+      if (!preflightFailure && files.length && (code === "400" || code === "404" || code === "415" || code === "422")) {
         failure = "OpenAI 无法读取此附件，请重新选择文件或换一种格式";
       }
       console.warn("Model call failed", code || (reason.includes("Connection") ? "connection" : "generation"));

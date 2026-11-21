@@ -21,13 +21,14 @@ func fail(w http.ResponseWriter, status int, message string) {
 }
 
 const mobileChat = "/mobile/chat"
+const mobileContext = "/mobile/context"
 const mobileFiles = "/mobile/attachments"
 
 func gateway(password, workerToken string, target *url.URL, files http.Handler) http.Handler {
 	expected := sha256.Sum256([]byte("piggy:" + password))
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
 		owner := "admin"
-		if pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles {
+		if pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext {
 			owner = "mobile"
 		}
 		pr.SetURL(target)
@@ -52,7 +53,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			androidUpdates(updateDirectory(), w, r)
 			return
 		}
-		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles {
+		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles || r.URL.Path == mobileContext {
 			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Mode") != "" {
 				fail(w, 403, "网页仅支持查看记录")
 				return

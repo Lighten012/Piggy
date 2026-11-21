@@ -47,6 +47,8 @@ class ChatActivity : Activity() {
     private lateinit var client: PiggyClient
     private lateinit var updater: AppUpdater
 
+    private lateinit var contextMeter: ContextMeter
+    private var readingContext = false
     private var versionCurrent = false
     private var selecting = false
     private var generating = false
@@ -111,6 +113,9 @@ class ChatActivity : Activity() {
         header.addView(mark(), LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(3) })
         header.addView(text("Piggy", 18f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
             LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(8) })
+        header.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        contextMeter = ContextMeter(this).apply { setOnClickListener { showContext() } }
+        header.addView(contextMeter, wrap, dp(48))
         root.addView(header, match, dp(48))
         root.addView(View(this).apply { setBackgroundColor(line) }, match, 1)
 
@@ -380,14 +385,35 @@ class ChatActivity : Activity() {
         clipToOutline = true
     }
 
+    private fun refreshContext() {
+        if (readingContext || !versionCurrent || generating) return
+        readingContext = true
+        client.readContext { value ->
+            readingContext = false
+            if (!generating) contextMeter.update(value)
+        }
+    }
+
+    private fun showContext() {
+        val usage = contextMeter.usage
+        val detail = usage?.detail ?: if (readingContext) "正在读取用量…" else "暂时无法读取用量"
+        val scope = if (generating) "本次发送的输入用量。" else
+            "包含系统提示词、最近的对话和仍在使用的附件。草稿和新选的附件会在发送时计入。"
+        AlertDialog.Builder(this).setTitle("上下文用量").setMessage(detail + "\n\n" + scope)
+            .setPositiveButton("知道了", null).apply {
+                if (!readingContext && !generating) setNeutralButton("刷新") { _, _ -> refreshContext() }
+            }.show()
+    }
+
     private fun showVersion(state: UpdateState) {
         versionCurrent = state == UpdateState.Current
+        contextMeter.visibility = if (versionCurrent) View.VISIBLE else View.GONE
         menu.isEnabled = versionCurrent
         if (!versionCurrent) drawer?.dismiss()
         chat.visibility = if (versionCurrent) View.VISIBLE else View.GONE
         gate.visibility = if (versionCurrent) View.GONE else View.VISIBLE
         controls()
-        if (versionCurrent) { toBottom(); return }
+        if (versionCurrent) { refreshContext(); toBottom(); return }
         gateProgress.visibility = if (state == UpdateState.Checking || state is UpdateState.Downloading) View.VISIBLE else View.GONE
         gateAction.visibility = View.GONE
         gateDetail.visibility = View.VISIBLE
@@ -526,6 +552,7 @@ class ChatActivity : Activity() {
         if (message.isEmpty() || !send.isEnabled) return
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         generating = true
+        contextMeter.update(null)
         controls()
         sendError.visibility = View.GONE
         input.setText("")
@@ -542,7 +569,7 @@ class ChatActivity : Activity() {
             markdown.setMarkdown(reply, source.toString())
             if (follow) toBottom()
         }
-        client.send(message, draft, uploaded = { reply.hint = "正在回复…" }, delta = { part ->
+        client.send(message, draft, uploaded = { reply.hint = "正在回复…" }, measured = contextMeter::update, delta = { part ->
             reply.hint = ""
             source.append(part)
             if (!scheduled) {
@@ -562,6 +589,8 @@ class ChatActivity : Activity() {
                 input.setSelection(input.length())
             }
             generating = false
+            contextMeter.update(null)
+            refreshContext()
             showFile()
             controls()
         })

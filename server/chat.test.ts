@@ -14,27 +14,43 @@ test("records accepted mobile turns and restores context after restart", async t
   const dir = mkdtempSync(join(tmpdir(),"piggy-test-"));
   t.after(() => rmSync(dir,{recursive:true,force:true}));
   const histories: string[][] = [];
+  const fileInputs: string[][] = [];
   const fixture = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
     assert.equal(payload.model, "gpt-6.2-sol");
-    assert.equal(payload.reasoning_effort, "high");
-    assert.equal(payload.max_completion_tokens, 16384);
-    const messages: { role: string; content: string | { text: string }[] }[] = payload.messages;
-    histories.push(messages
-      .filter(message => message.role === "user")
-      .map(({ content }) => typeof content === "string" ? content : content.map(part => part.text).join("")));
+    fileInputs.push(payload.input.flatMap((item: {content?:{file_id?:string}[]}) =>
+      Array.isArray(item.content) ? item.content.flatMap(part => part.file_id ? [part.file_id] : []) : []));
+    const users = payload.input.filter((item: {role?:string}) => item.role === "user")
+      .map((item: {content:{text:string}[]}) => item.content.map(part => part.text).join(""));
+    assert.ok(payload.input.some((item: {role?:string;content:unknown}) =>
+      item.role === "developer" && JSON.stringify(item.content).includes("个人助手 Piggy")));
+    if (req.url === "/v1/responses/input_tokens") {
+      if (users.at(-1) === "unknown") { res.writeHead(503); res.end(); return; }
+      const tokens = users.at(-1) === "overflow" ? 300001 : users.at(-1) === "exact" ? 300000 : users.length + 10;
+      res.writeHead(200,{"content-type":"application/json"});
+      res.end(JSON.stringify({input_tokens:tokens}));
+      return;
+    }
+    assert.equal(req.url, "/v1/responses");
+    assert.equal(payload.reasoning.effort, "high");
+    assert.equal(payload.max_output_tokens, 16384);
+    histories.push(users);
     if (histories.length === 2) {
       res.writeHead(401, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "Test failure" } }));
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
-    for (const [delta, finish_reason] of [[{ role: "assistant", content: "OK" }, null], [{}, "stop"]]) {
-      const chunk = { id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] };
-      res.write("data: " + JSON.stringify(chunk) + "\n\n");
-    }
+    const item = {type:"message",id:"msg_"+histories.length,role:"assistant",status:"completed",
+      content:[{type:"output_text",text:"OK",annotations:[]}]};
+    for (const event of [
+      {type:"response.output_item.added",output_index:0,item:{...item,content:[]}},
+      {type:"response.output_text.delta",output_index:0,delta:"OK"},
+      {type:"response.output_item.done",output_index:0,item},
+      {type:"response.completed",response:{id:"resp_fixture",status:"completed",output:[item]}},
+    ]) res.write("data: " + JSON.stringify(event) + "\n\n");
     res.end("data: [DONE]\n\n");
   });
   fixture.listen(0, "127.0.0.1");
@@ -66,9 +82,10 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.equal((await fetch(worker.base+"/chat",{method:"POST",headers:admin})).status,405);
   const request = randomUUID();
   const first = await send("one",request);
-  assert.equal(first[0].delta,"OK");
+  assert.deepEqual(first[0].context,{used:11,limit:300000});
+  assert.equal(first[1].delta,"OK");
   assert.equal(first.at(-1).session,session);
-  assert.deepEqual(await send("one",request),first);
+  assert.deepEqual(await send("one",request),first.slice(1));
   assert.equal(histories.length,1);
   assert.ok((await send("failed")).at(-1).error);
   const stopped = once(worker.child,"exit");worker.child.kill();await stopped;
@@ -82,6 +99,27 @@ test("records accepted mobile turns and restores context after restart", async t
     ["one","OK","complete"],["failed","","failed"],["two","OK","complete"],["separate","OK","complete"]]);
   assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","files","filesize","id","question","status"]);
   assert.equal((await (await fetch(worker.base+"/history?after=2",{headers:admin})).json()).turns.length,2);
+  const preview = await fetch(worker.base+"/context",{method:"POST",headers:mobile,body:JSON.stringify({session})});
+  assert.deepEqual(await preview.json(),{used:12,limit:300000});
+  const calls = histories.length;
+  const over = await send("overflow");
+  assert.deepEqual(over[0].context,{used:300001,limit:300000});
+  assert.match(over.at(-1).error,/300,001/);
+  assert.match((await send("unknown")).at(-1).error,/核对上下文/);
+  assert.equal(histories.length,calls);
+  assert.equal((await send("exact")).at(-1).done,true);
+
+  const fileSession = randomUUID(), id = randomUUID();
+  const db = new Journal(join(dir,"test.sqlite"));
+  db.saveAttachment(fileSession,{id,name:"notes.pdf",size:50,image:0,remote:"file-notes",expires:Date.now()+60000});
+  const withFile = await fetch(worker.base+"/chat",{method:"POST",headers:mobile,body:JSON.stringify({
+    text:"read",session:fileSession,attachments:[id]})});
+  assert.match(await withFile.text(),/"done":true/);
+  assert.deepEqual(fileInputs.slice(-2),[["file-notes"],["file-notes"]]);
+  const filePreview = await fetch(worker.base+"/context",{method:"POST",headers:mobile,body:JSON.stringify({session:fileSession})});
+  assert.equal(filePreview.status,200);
+  assert.deepEqual(fileInputs.at(-1),["file-notes"]);
+
 });
 
 test("history pages and interrupted turns survive reopening SQLite", t => {

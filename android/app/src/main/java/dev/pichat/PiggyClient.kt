@@ -154,7 +154,27 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         }
     }
 
-    fun send(text: String, draftText: String, uploaded: () -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
+    private fun usage(json: JSONObject): ContextUsage {
+        val used = json.getInt("used")
+        val limit = json.getInt("limit")
+        require(used >= 0 && limit > 0)
+        return ContextUsage(used, limit)
+    }
+
+    fun readContext(finished: (ContextUsage?) -> Unit) = worker.execute {
+        var current: ContextUsage? = null
+        runCatching {
+            post(PiggyServer.url("/mobile/context"), { http ->
+                http.setRequestProperty("Content-Type","application/json")
+                http.outputStream.use { it.write(JSONObject().put("session",session).toString().toByteArray()) }
+            }) { http ->
+                current = usage(JSONObject(http.inputStream.bufferedReader().use { it.readText() }))
+            }
+        }
+        ui { finished(current) }
+    }
+
+    fun send(text: String, draftText: String, uploaded: () -> Unit, measured: (ContextUsage) -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
         val failure = runCatching {
             val previousId = prefs.getString("pendingId", null)
             val id = if (prefs.getString("pendingText", null) == text && previousId != null) previousId else UUID.randomUUID().toString()
@@ -184,6 +204,10 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                         if (closed) throw IOException("连接已关闭")
                         if (line.isBlank()) continue
                         val event = JSONObject(line)
+                        event.optJSONObject("context")?.let {
+                            val value = usage(it)
+                            ui { measured(value) }
+                        }
                         if (event.has("error")) {
                             prefs.edit().remove("pendingId").commit()
                             throw IOException(event.getString("error"))
