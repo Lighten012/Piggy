@@ -7,6 +7,8 @@ export interface Attachment {
   id: string; name: string; size: number; image: number; remote: string; expires: number;
 }
 
+import type { ModelSettings } from "./model-settings.ts";
+
 interface Copy { key: string; until: number; mime: string }
 
 export class Journal {
@@ -15,6 +17,9 @@ export class Journal {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA journal_mode=WAL;
+      CREATE TABLE IF NOT EXISTS model_settings (
+        id INTEGER PRIMARY KEY CHECK(id=1), model TEXT NOT NULL, effort TEXT NOT NULL, tier TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS turns (
         id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, request TEXT NOT NULL,
         created INTEGER NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '',
@@ -51,6 +56,14 @@ export class Journal {
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
       this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");
+  }
+
+  modelSettings(): ModelSettings | undefined {
+    return this.db.prepare("SELECT model,effort,tier FROM model_settings WHERE id=1").get() as ModelSettings | undefined;
+  }
+  saveModelSettings({model,effort,tier}: ModelSettings) {
+    this.db.prepare("INSERT INTO model_settings VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET model=excluded.model, effort=excluded.effort, tier=excluded.tier")
+      .run(model,effort,tier);
   }
 
   private initializeContext() {

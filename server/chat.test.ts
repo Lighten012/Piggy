@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { defaultSettings, modelChoices } from "./model-settings.ts";
 import { capabilityCatalog } from "./capabilities.ts";
 import { DatabaseSync } from "node:sqlite";
 import { Journal } from "./journal.ts";
@@ -21,7 +22,8 @@ test("records accepted mobile turns and restores context after restart", async t
     let body = "";
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
-    assert.equal(payload.model, "gpt-6.2-sol");
+    const changed = payload.input.some(i => JSON.stringify(i.content).includes("settings-probe"));
+    assert.equal(payload.model, changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
     fileInputs.push(payload.input.flatMap((item: {content?:{file_id?:string}[]}) =>
       Array.isArray(item.content) ? item.content.flatMap(part => part.file_id ? [part.file_id] : []) : []));
@@ -41,7 +43,8 @@ test("records accepted mobile turns and restores context after restart", async t
       return;
     }
     assert.equal(req.url, "/v1/responses");
-    assert.equal(payload.reasoning.effort, "high");
+    assert.equal(payload.reasoning.effort, changed ? "max" : "high");
+    assert.equal(payload.service_tier, changed ? "ultrafast" : "default");
     assert.equal(payload.max_output_tokens, 16384);
     histories.push(users);
     if (histories.length === 2) {
@@ -89,11 +92,14 @@ test("records accepted mobile turns and restores context after restart", async t
   }
   assert.equal((await fetch(worker.base+"/capabilities")).status,401);
   assert.notEqual((await fetch(worker.base+"/capabilities",{headers:mobile})).status,200);
-  assert.deepEqual(await (await fetch(worker.base+"/capabilities",{headers:admin})).json(),capabilityCatalog());
+  assert.deepEqual(await (await fetch(worker.base+"/capabilities",{headers:admin})).json(),{...capabilityCatalog(),models:modelChoices,active:defaultSettings});
   assert.equal((await fetch(worker.base+"/history")).status,401);
   assert.notEqual((await fetch(worker.base+"/history",{headers:mobile})).status,200);
   assert.equal((await fetch(worker.base+"/chat",{method:"POST",headers:admin})).status,405);
   const request = randomUUID();
+  const setModel = (headers, value) => fetch(worker.base+"/model-settings",{method:"PUT",headers,body:JSON.stringify(value)});
+  assert.notEqual((await setModel(mobile,defaultSettings)).status,200);
+  assert.equal((await setModel(admin,{...defaultSettings,tier:"unsupported"})).status,400);
   const first = await send("one",request);
   assert.deepEqual(first[0].context,{used:11,limit:300000});
   assert.equal(first[1].delta,"OK");
@@ -147,6 +153,13 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.equal((await send("search the web",searchId,phone)).at(-1).answer,cited);
   assert.equal(db.page(null,null).at(-1)?.answer,cited);
   assert.ok(JSON.stringify(db.contextMessages(phone)).includes(cited));
+
+  const updated = {model:"gpt-6.2-astra",effort:"max",tier:"ultrafast"};
+  assert.deepEqual(await (await setModel(admin,updated)).json(),updated);
+  const exit=once(worker.child,"exit");worker.child.kill();await exit;
+  worker=await start();
+  assert.deepEqual((await (await fetch(worker.base+"/capabilities",{headers:admin})).json()).active,updated);
+  assert.equal((await send("settings-probe",randomUUID(),randomUUID())).at(-1).done,true);
 
 });
 

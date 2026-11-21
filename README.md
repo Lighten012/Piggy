@@ -6,7 +6,7 @@ Android 在同一段对话中持续发送消息，由美国 CVM 上的 Pi Agent 
 手机 → HTTPS 8888 → Go → Pi → OpenAI
                           ↕
                        SQLite
-只读网页 → Go → 经鉴权的历史查询与 Agent 能力清单
+网页管理端 → Go → 经鉴权的历史查询、Agent 能力清单和模型设置
 ```
 
 服务端在调用模型前写入提问，结束时保存回复或失败状态。服务中断遗留的进行中记录在启动时标记失败。完整记录存储在 `/var/lib/piggy-journal/chat.sqlite`，使用 SQLite WAL，可跨发布和服务重启保留。只有登录后的网页可以读取完整记录。手机保留本次安装的对话编号和最近 40 轮成功问答，重新打开可继续。网页从 turns 表读取聊天原文。模型和圆环读取独立的 active_context 表，按顺序使用该对话的全部工作上下文。每轮成功后，原文和新增上下文在同一个事务中保存。首次升级时一次性导入已有成功轮次的上下文。聊天顶栏的圆环按 300,000 个输入 token 显示用量，点击可查看明细。服务端在每次生成前对实际 Responses 输入（含附件）调用 OpenAI 计数，超限或计数失败时保留草稿并提示。手机清除数据或重装后，网页仍保留服务器上的记录，手机的本地记录和对话编号会重置。
@@ -21,6 +21,10 @@ cd android
 ```
 
 调试包位于 `app/build/outputs/apk/debug/app-debug.apk`。分发时构建 `:app:assembleRelease`，用自己的 Android 发布密钥通过 `zipalign`、`apksigner` 签名。更新已安装应用需要相同签名。手机首次打开即可对话。APK 通过公网 HTTPS 向 `POST /mobile/chat` 发送消息，该接口允许匿名调用。网页使用只读的 `GET /history`，需要管理员登录。旧网页发送接口已关闭。
+
+### 手机模型设置
+
+在网页「Agent 能力 → 手机对话模型」选择 GPT-6.2 Sol 或 Astra、思考强度和回复速度，点击「保存设置」。设置保存在 SQLite 中，所有手机从下一次请求开始使用。每个请求固定使用开始时的模型设置，生成和上下文计数使用同一模型。Fast 和 Ultrafast 使用 OpenAI 的加速计费档位。初始配置为 Sol、高思考、标准速度。
 
 ### 联网搜索
 
@@ -49,7 +53,7 @@ Go 将匿名、带版本号的 `POST /mobile/attachments` 流式转给 Pi。Pi �
 | 变量 | 用途 |
 |---|---|
 | PI_API_KEY | Pi 专用的 OpenAI 密钥 |
-| PI_MODEL | 可选，默认 gpt-6.2-sol。该模型使用 high 思考强度 |
+| PI_MODEL | 首次使用的模型，默认 gpt-6.2-sol；网页已保存的设置优先 |
 | PIGGY_ADMIN_PASSWORD | 网页账号 piggy 的独立密码 |
 | PIGGY_WORKER_TOKEN | Go 与 Pi 之间的随机内部密钥 |
 

@@ -86,6 +86,11 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			fail(w, 401, "请登录 Piggy")
 			return
 		}
+		if r.URL.Path == "/model-settings" && r.Method == http.MethodPut {
+			r.Body = http.MaxBytesReader(w, r.Body, 2048)
+			proxy.ServeHTTP(w, r)
+			return
+		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
 			fail(w, 405, "网页仅支持查看记录")
