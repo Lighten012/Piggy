@@ -30,14 +30,22 @@ test("records accepted mobile turns and restores context after restart", async t
     if (req.url === "/v1/responses" && typeof payload.input === "string") {
       assert.equal(payload.store,false);
       assert.equal(payload.tools,undefined);
+      if (payload.instructions.includes("检查 JSON")) {
+        const {最新用户原话: question} = JSON.parse(payload.input);
+        res.writeHead(200,{"content-type":"application/json"});
+        const allowed = question === "请记住：只喝温水" || question === "帮我记一下刚才那条";
+        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:allowed?"YES":"NO"}]}]}));
+        return;
+      }
       summaries.push(payload.input);
       res.writeHead(summaryUnavailable ? 503 : 200,{"content-type":"application/json"});
       res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:"保留蓝色偏好"}]}]}));
       return;
     }
-    const changed = payload.input.some(i => JSON.stringify(i.content).includes("settings-probe"));
+    const changed = payload.input.some(i => JSON.stringify(i.content ?? "").includes("settings-probe"));
     assert.equal(payload.model, changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
+    assert.ok(payload.tools.some((tool:{name?:string}) => tool.name === "save_memory"));
     fileInputs.push(payload.input.flatMap((item: {content?:{file_id?:string}[]}) =>
       Array.isArray(item.content) ? item.content.flatMap(part => part.file_id ? [part.file_id] : []) : []));
     const users = payload.input.filter((item: {role?:string}) => item.role === "user")
@@ -67,6 +75,18 @@ test("records accepted mobile turns and restores context after restart", async t
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
+    if (["请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1))
+        && payload.input.at(-1).type !== "function_call_output") {
+      const item = {type:"function_call",name:"save_memory",id:"fc_test"+histories.length,
+        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify({text:"只喝温水"})};
+      for (const event of [
+        {type:"response.output_item.added",output_index:0,item:{...item,arguments:""}},
+        {type:"response.output_item.done",output_index:0,item},
+        {type:"response.completed",response:{id:"resp_memory",status:"completed",output:[item]}},
+      ]) res.write("data: " + JSON.stringify(event) + "\n\n");
+      res.end("data: [DONE]\n\n");
+      return;
+    }
     const searching = users.at(-1) === "search the web";
     const text = searching ? "🐷今天有新闻。下段" : "OK";
     const annotations = searching ? [{type:"url_citation",url:"https://example.org/news",start_index:1,end_index:7}] : [];
@@ -206,6 +226,20 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.ok(await previewOf() < threshold);
   await send("large attachment question",retryKey,compactSession);
   assert.deepEqual(db.contextTurns(compactSession),after);
+
+  const memoryDb = new DatabaseSync(join(dir,"test.sqlite"));
+  const entries = () => memoryDb.prepare("SELECT conversation,content FROM memories ORDER BY id").all().map(row=>[row.conversation,row.content]);
+  const firstPhone = randomUUID(), secondPhone = randomUUID(), explicitId = randomUUID();
+  assert.equal((await send("不要记住：只喝温水",randomUUID(),firstPhone)).at(-1).done,true);
+  assert.deepEqual(entries(),[]);
+  assert.equal((await send("请记住：只喝温水",explicitId,firstPhone)).at(-1).done,true);
+  await send("请记住：只喝温水",explicitId,firstPhone);
+  await send("请记住：只喝温水",randomUUID(),firstPhone);
+  assert.deepEqual(entries(),[[firstPhone,"只喝温水"]]);
+  await send("我只喝温水",randomUUID(),secondPhone);
+  assert.equal((await send("帮我记一下刚才那条",randomUUID(),secondPhone)).at(-1).done,true);
+  assert.deepEqual(entries(),[[firstPhone,"只喝温水"],[secondPhone,"只喝温水"]]);
+  memoryDb.close();
 
   const updated = {model:"gpt-6.2-astra",effort:"max",tier:"ultrafast"};
   assert.deepEqual(await (await setModel(admin,updated)).json(),updated);

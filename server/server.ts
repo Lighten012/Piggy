@@ -10,9 +10,10 @@ import { WebSearch } from "./web-search.ts";
 import { Retention } from "./retention.ts";
 import { Journal, type Attachment } from "./journal.ts";
 import { readFileSync } from "node:fs";
-import { agentTools, capabilityCatalog, loadedSkills } from "./capabilities.ts";
-import { Agent } from "@earendil-works/pi-agent-core";
-import { toToolDeclaration, type Model } from "@earendil-works/pi-ai";
+import { toolDeclarations, capabilityCatalog, loadedSkills } from "./capabilities.ts";
+import { memoryTool } from "./memory.ts";
+import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
 import { defaultSettings, modelChoices, resolveModel, validSettings, type ModelSettings } from "./model-settings.ts";
 import { convertResponsesMessages, convertResponsesTools } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
@@ -101,7 +102,7 @@ function countFailure(files:Attachment[], error:unknown) {
     ? "无法统计此附件的上下文，请减少附件内容或更换文件后重试"
     : "暂时无法核对上下文用量，请稍后重试";
 }
-function newAgent(model: Model<"openai-responses">, settings: ModelSettings, outputs: ReplyFiles, search: WebSearch, availableIds: string[], files: Attachment[], systemPrompt: string, count: (input: unknown[], tools: unknown[], signal?:AbortSignal) => Promise<ContextUsage>,
+function newAgent(agentTools:AgentTool[], model: Model<"openai-responses">, settings: ModelSettings, outputs: ReplyFiles, search: WebSearch, availableIds: string[], files: Attachment[], systemPrompt: string, count: (input: unknown[], tools: unknown[], signal?:AbortSignal) => Promise<ContextUsage>,
     reportTier: (tier: string) => void, measured: (usage: ContextUsage) => void,
     rejectGeneration: (message: string) => void) {
   // Pi 1.5.2 has no max effort; onPayload applies the exact OpenAI setting.
@@ -174,8 +175,8 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       const messages = journal.contextMessages(data.session) as Message[];
       if (files.length) messages.push({role:"user",content:[{type:"text",text:""}],timestamp:Date.now()});
       const input = wireInput(model,promptForFiles(stored.length,files.length),messages,files);
-      const tools = agentTools.length ? convertResponsesTools(agentTools.map(toToolDeclaration), {supportsStrictMode:true}) : undefined;
-      const usage = await countInput(model, input, [...(tools ?? []), ...responseTools(toolFileIds(data.session,files))]);
+      const tools = convertResponsesTools(toolDeclarations, {supportsStrictMode:true});
+      const usage = await countInput(model, input, [...tools, ...responseTools(toolFileIds(data.session,files))]);
       res.writeHead(200,{"Content-Type":"application/json"});
       res.end(JSON.stringify(usage));
     } catch { reject(res,503,"上下文用量暂时无法读取"); }
@@ -221,7 +222,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   let actualTier: string | undefined;
   const availableIds = toolFileIds(conversation,files);
   const systemPrompt = promptForFiles(stored.length,files.length);
-  const declared = convertResponsesTools(agentTools.map(toToolDeclaration), {supportsStrictMode:true});
+  const declared = convertResponsesTools(toolDeclarations, {supportsStrictMode:true});
   const tools = [...declared, ...responseTools(availableIds)];
   const controller = new AbortController();
   let cache: {input:unknown[]; tools:unknown[]; usage:ContextUsage} | undefined;
@@ -231,7 +232,8 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     cache = {input,tools,usage};
     return usage;
   }
-  const agent = newAgent(model,settings,outputs,search,availableIds,files,systemPrompt,count,
+  const toolsForTurn = [memoryTool(journal,id,question,turns.at(-1)?.messages ?? [],model,apiKey)];
+  const agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,files,systemPrompt,count,
     tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
   const stop = () => { controller.abort(); agent.abort(); };
   res.once("close", stop);

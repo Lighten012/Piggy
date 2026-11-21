@@ -1,23 +1,12 @@
 import { hostedTools } from "./hosted-tools.ts";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { toToolDeclaration } from "@earendil-works/pi-ai";
+import { memorySkill, saveMemoryDeclaration } from "./memory.ts";
 
-interface LoadedSkill {
-  name: string;
-  description: string;
-  instructions: string;
-}
-
-// Only include skills and tools available to this Piggy worker.
-export const loadedSkills: LoadedSkill[] = [];
-export const agentTools: AgentTool[] = [];
+export const loadedSkills = [memorySkill];
+export const toolDeclarations = [saveMemoryDeclaration];
 
 export function capabilityCatalog() {
   return {
     skills: loadedSkills.map(({name, description, instructions}) => ({name, description, instructions})),
-    tools: [...hostedTools.map(t => ({name:t.type,description:t.description})), ...agentTools.map(tool => {
-      const {name, description, parameters} = toToolDeclaration(tool);
-      return {name, description, parameters};
-    })],
+    tools: [...hostedTools.map(t => ({name:t.type,description:t.description})), ...toolDeclarations],
   };
 }

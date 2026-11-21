@@ -29,6 +29,10 @@ export class Journal {
         status TEXT NOT NULL CHECK(status IN ('pending','complete','failed')),
         UNIQUE(conversation,request)
       );
+      CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, turn_id INTEGER NOT NULL REFERENCES turns(id),
+        created INTEGER NOT NULL, content TEXT NOT NULL, UNIQUE(conversation,content)
+      );
       CREATE TABLE IF NOT EXISTS attachments (
         conversation TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
         image INTEGER NOT NULL, remote TEXT NOT NULL, expires INTEGER NOT NULL,
@@ -211,6 +215,13 @@ export class Journal {
       throw error;
     }
   }
+  saveMemory(turn:number|bigint, content:string) {
+    const source = this.db.prepare("SELECT conversation FROM turns WHERE id=? AND status='pending'").get(turn);
+    if (!source) throw new Error("当前消息已结束，无法保存记忆。");
+    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content) VALUES(?,?,?,?)
+      ON CONFLICT(conversation,content) DO NOTHING`).run(source.conversation,turn,Date.now(),content);
+  }
+
   fail(id: number | bigint, partial: string) {
     this.db.prepare("UPDATE turns SET status='failed',answer=? WHERE id=? AND status='pending'").run(partial,id);
   }
