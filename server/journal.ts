@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { memoryKeywords, queryKeywords } from "./memory-keywords.ts";
 import type { ReplyFile } from "./reply-files.ts";
 import { previewType } from "./retention.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -13,6 +14,14 @@ export interface ContextTurn { sequence: number; messages: AgentMessage[] }
 export interface ContextReplacement { through: number; last: number; summary: AgentMessage }
 
 interface Copy { key: string; until: number; mime: string }
+
+function keywordExcerpt(text:string, terms:string[], size:number) {
+  if (text.length <= size) return text;
+  const lower = text.toLowerCase();
+  const position = terms.map(term => lower.indexOf(term)).find(offset => offset >= 0) ?? 0;
+  const start = Math.min(Math.max(0,position-Math.floor(size/4)),text.length-size);
+  return (start ? "…" : "") + text.slice(start,start+size) + (start+size < text.length ? "…" : "");
+}
 
 export class Journal {
   private db: DatabaseSync;
@@ -31,7 +40,7 @@ export class Journal {
       );
       CREATE TABLE IF NOT EXISTS memories (
         id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, turn_id INTEGER NOT NULL REFERENCES turns(id),
-        created INTEGER NOT NULL, content TEXT NOT NULL, UNIQUE(conversation,content)
+        created INTEGER NOT NULL, content TEXT NOT NULL, keywords TEXT, UNIQUE(conversation,content)
       );
       CREATE TABLE IF NOT EXISTS attachments (
         conversation TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
@@ -60,6 +69,7 @@ export class Journal {
       CREATE INDEX IF NOT EXISTS turn_files_attachment ON turn_files(attachment);
       INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
     `);
+    this.initializeMemoryIndex();
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
       this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");
@@ -71,6 +81,40 @@ export class Journal {
   saveModelSettings({model,effort,tier}: ModelSettings) {
     this.db.prepare("INSERT INTO model_settings VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET model=excluded.model, effort=excluded.effort, tier=excluded.tier")
       .run(model,effort,tier);
+  }
+
+  private initializeMemoryIndex() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name='keywords'").get())
+        this.db.exec("ALTER TABLE memories ADD COLUMN keywords TEXT");
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_terms USING fts5(keywords);
+        CREATE TRIGGER IF NOT EXISTS memory_terms_insert AFTER INSERT ON memories WHEN new.keywords IS NOT NULL BEGIN
+          INSERT INTO memory_terms(rowid,keywords) VALUES(new.id,new.keywords);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_terms_update AFTER UPDATE OF keywords ON memories BEGIN
+          DELETE FROM memory_terms WHERE rowid=old.id;
+          INSERT INTO memory_terms(rowid,keywords) VALUES(new.id,new.keywords);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_terms_delete AFTER DELETE ON memories BEGIN
+          DELETE FROM memory_terms WHERE rowid=old.id;
+        END;
+      `);
+      const batch = this.db.prepare("SELECT id,content FROM memories WHERE id>? AND keywords IS NULL ORDER BY id LIMIT 32");
+      const update = this.db.prepare("UPDATE memories SET keywords=? WHERE id=?");
+      let cursor = 0;
+      for (let rows=batch.all(cursor); rows.length; rows=batch.all(cursor)) {
+        for (const row of rows) {
+          update.run(JSON.stringify(memoryKeywords(String(row.content))),row.id);
+          cursor = Number(row.id);
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   private initializeContext() {
@@ -215,11 +259,62 @@ export class Journal {
       throw error;
     }
   }
-  saveMemory(turn:number|bigint, content:string) {
+  saveMemory(turn:number|bigint, content:string, hints:readonly string[] = []) {
     const source = this.db.prepare("SELECT conversation FROM turns WHERE id=? AND status='pending'").get(turn);
     if (!source) throw new Error("当前消息已结束，无法保存记忆。");
-    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content) VALUES(?,?,?,?)
-      ON CONFLICT(conversation,content) DO NOTHING`).run(source.conversation,turn,Date.now(),content);
+    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content,keywords) VALUES(?,?,?,?,?)
+      ON CONFLICT(conversation,content) DO NOTHING`).run(source.conversation,turn,Date.now(),content,JSON.stringify(memoryKeywords(content,hints)));
+  }
+
+  searchMemory(conversation:string, keywords:string[], offset=0) {
+    const terms = queryKeywords(keywords);
+    if (!terms.length) return {candidates:[]};
+    // Quote each FTS phrase literally, including embedded double quotes.
+    const match = terms.map(term => '"' + term.replaceAll('"','""') + '"').join(" OR ");
+    const rows = this.db.prepare(`
+      SELECT m.id,m.created,m.content FROM memory_terms JOIN memories m ON m.id=memory_terms.rowid
+      WHERE memory_terms MATCH ? AND m.conversation=?
+      ORDER BY memory_terms.rank,m.created DESC,m.id DESC LIMIT 9 OFFSET ?
+    `).all(match,conversation,offset);
+    const candidates = rows.slice(0,8).map(row => ({
+      memoryId:row.id,created:row.created,text:keywordExcerpt(String(row.content),terms,1200),
+    }));
+    return {candidates,nextOffset:rows.length > 8 ? offset+8 : undefined};
+  }
+
+  searchChatHistory(conversation:string, before:number|bigint, keywords:string[], offset=0) {
+    const terms = queryKeywords(keywords);
+    if (!terms.length) return {matches:[]};
+    const rows = this.db.prepare(`
+      SELECT t.id,t.created,t.question,t.answer,t.status FROM turns t JOIN json_each(?) word
+      ON instr(lower(t.question),word.value)>0 OR instr(lower(t.answer),word.value)>0
+      WHERE t.conversation=? AND t.id<? GROUP BY t.id
+      ORDER BY count(*) DESC,t.id DESC LIMIT 9 OFFSET ?
+    `).all(JSON.stringify(terms),conversation,before,offset);
+    const matches = rows.slice(0,8).map(row => ({
+      turnId:row.id,created:row.created,status:row.status,
+      question:keywordExcerpt(String(row.question),terms,400),answer:keywordExcerpt(String(row.answer),terms,500),
+    }));
+    return {matches,nextOffset:rows.length > 8 ? offset+8 : undefined};
+  }
+
+  readChatContext(conversation:string, before:number|bigint, source:"memory"|"turn", id:number, offset=0) {
+    const anchor = source === "memory"
+      ? this.db.prepare("SELECT turn_id FROM memories WHERE conversation=? AND id=?").get(conversation,id)?.turn_id : id;
+    if (typeof anchor !== "number") return {turns:[]};
+    const columns = "SELECT id,created,status,question,answer FROM turns WHERE conversation=? AND id<?";
+    const main = this.db.prepare(columns+" AND id=?").get(conversation,before,anchor);
+    if (!main) return {turns:[]};
+    // Follow the save request back into the archive, even after working context compaction.
+    const older = offset ? [] : this.db.prepare(columns+" AND id<? ORDER BY id DESC LIMIT 2").all(conversation,before,anchor).reverse();
+    const newer = offset ? [] : this.db.prepare(columns+" AND id>? ORDER BY id LIMIT 2").all(conversation,before,anchor);
+    const turns = [...older,main,...newer].map(row => {
+      const question = String(row.question), answer = String(row.answer);
+      const end = offset+1200;
+      return {turnId:row.id,created:row.created,status:row.status,question:question.slice(offset,end),answer:answer.slice(offset,end),
+        nextOffset:Math.max(question.length,answer.length)>end ? end : undefined};
+    });
+    return {anchorTurnId:anchor,turns};
   }
 
   fail(id: number | bigint, partial: string) {

@@ -1,8 +1,8 @@
 import { hostedTools } from "./hosted-tools.ts";
-import { memorySkill, saveMemoryDeclaration } from "./memory.ts";
+import { memorySkill, saveMemoryDeclaration, searchMemoryDeclaration, searchChatDeclaration, readChatDeclaration } from "./memory.ts";
 
 export const loadedSkills = [memorySkill];
-export const toolDeclarations = [saveMemoryDeclaration];
+export const toolDeclarations = [saveMemoryDeclaration, searchMemoryDeclaration, searchChatDeclaration, readChatDeclaration];
 
 export function capabilityCatalog() {
   return {

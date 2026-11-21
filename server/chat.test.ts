@@ -78,7 +78,7 @@ test("records accepted mobile turns and restores context after restart", async t
     if (["请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1))
         && payload.input.at(-1).type !== "function_call_output") {
       const item = {type:"function_call",name:"save_memory",id:"fc_test"+histories.length,
-        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify({text:"只喝温水"})};
+        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify({text:"只喝温水",keywords:["喝","温水"]})};
       for (const event of [
         {type:"response.output_item.added",output_index:0,item:{...item,arguments:""}},
         {type:"response.output_item.done",output_index:0,item},

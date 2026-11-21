@@ -11,7 +11,7 @@ import { Retention } from "./retention.ts";
 import { Journal, type Attachment } from "./journal.ts";
 import { readFileSync } from "node:fs";
 import { toolDeclarations, capabilityCatalog, loadedSkills } from "./capabilities.ts";
-import { memoryTool } from "./memory.ts";
+import { memoryTool, memoryReadTools } from "./memory.ts";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { defaultSettings, modelChoices, resolveModel, validSettings, type ModelSettings } from "./model-settings.ts";
@@ -232,7 +232,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     cache = {input,tools,usage};
     return usage;
   }
-  const toolsForTurn = [memoryTool(journal,id,question,turns.at(-1)?.messages ?? [],model,apiKey)];
+  const toolsForTurn = [memoryTool(journal,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,conversation,id)];
   const agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,files,systemPrompt,count,
     tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
   const stop = () => { controller.abort(); agent.abort(); };
