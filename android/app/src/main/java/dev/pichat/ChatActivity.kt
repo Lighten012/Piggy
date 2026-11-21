@@ -166,6 +166,8 @@ class ChatActivity : Activity() {
             gravity = Gravity.CENTER
             isFocusable = true
             setOnClickListener {
+                selecting = true
+                controls()
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "*/*"
@@ -319,7 +321,7 @@ class ChatActivity : Activity() {
     }
 
     private fun showFile() {
-        val files = if (generating || client.pendingSeparate) emptyList() else client.attachments
+        val files = client.attachments
         fileRow.removeAllViews()
         fileStrip.visibility = if (files.isEmpty()) View.GONE else View.VISIBLE
         for (file in files) {
@@ -482,6 +484,10 @@ class ChatActivity : Activity() {
     @Deprecated("Activity result callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 302 && resultCode != RESULT_OK) {
+            selecting = false
+            controls()
+        }
         if (requestCode == 302 && resultCode == RESULT_OK) {
             val clip = data?.clipData
             val uris = if (clip != null) (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
@@ -492,8 +498,12 @@ class ChatActivity : Activity() {
                 selecting = false
                 showFile()
                 controls()
-                sendError.text = error
-                sendError.visibility = if (error.isNullOrEmpty()) View.GONE else View.VISIBLE
+                if (client.pendingSeparate && !generating) {
+                    if (!error.isNullOrEmpty()) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                } else {
+                    sendError.text = error
+                    sendError.visibility = if (error.isNullOrEmpty()) View.GONE else View.VISIBLE
+                }
             }
         }
         if (requestCode == AppUpdater.PERMISSION_REQUEST && android.os.Build.VERSION.SDK_INT >= 26 &&
@@ -581,7 +591,7 @@ class ChatActivity : Activity() {
     private fun toBottom() = scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     private fun controls() {
         val enabled = versionCurrent && !generating && !selecting && !client.pendingSeparate
-        attach.isEnabled = enabled
+        attach.isEnabled = versionCurrent && !selecting
         send.isEnabled = enabled
         send.alpha = if (enabled) 1f else .55f
         input.isEnabled = versionCurrent
@@ -590,9 +600,9 @@ class ChatActivity : Activity() {
         sendError.text = "$error · 点此处理上一条消息"
         sendError.visibility = View.VISIBLE
         sendError.setOnClickListener {
-            if (!client.pendingSeparate || generating || !versionCurrent) return@setOnClickListener
+            if (!client.pendingSeparate || generating || selecting || !versionCurrent) return@setOnClickListener
             AlertDialog.Builder(this).setTitle("上一条消息")
-                .setMessage((listOf(client.pendingDraft) + client.attachments.map { it.optString("name") })
+                .setMessage((listOf(client.pendingDraft) + client.pendingAttachments.map { it.optString("name") })
                     .filter { it.isNotBlank() }.joinToString("\n"))
                 .setPositiveButton("重试") { _, _ -> submit(true) }
                 .setNegativeButton("放弃上一条") { _, _ ->
@@ -606,7 +616,7 @@ class ChatActivity : Activity() {
 
     private fun submit(retry: Boolean = false) {
         val draft = if (retry) client.pendingDraft else input.text.toString().trim()
-        val files = client.attachments
+        val files = if (retry) client.pendingAttachments else client.attachments
         val message = draft.ifEmpty {
             when (files.size) { 0 -> ""; 1 -> "请帮我看看这个文件。"; else -> "请帮我看看这些文件。" }
         }
@@ -656,7 +666,7 @@ class ChatActivity : Activity() {
                 if (firstPendingRow == 1) empty.visibility = View.VISIBLE
                 sendError.text = error
                 sendError.visibility = View.VISIBLE
-                client.restorePendingIfEmpty()
+                if (!selecting) client.restorePendingIfEmpty()
                 if (client.pendingSeparate) showPendingError(error)
                 else {
                     input.setText(client.draft)

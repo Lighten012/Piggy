@@ -17,6 +17,7 @@ import javax.net.ssl.HttpsURLConnection
 
 class PiggyClient(private val activity: Activity, private val outdated: () -> Unit) {
     private val worker = Executors.newSingleThreadExecutor()
+    private val selectionWorker = Executors.newSingleThreadExecutor()
     private val contextWorker = Executors.newSingleThreadExecutor()
     private val endpoint = PiggyServer.url("/mobile/chat")
     @Volatile private var closed = false
@@ -30,6 +31,16 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
     val pendingDraft: String get() = prefs.getString("pendingDraft", "").orEmpty()
     val pendingSeparate: Boolean get() = prefs.getBoolean("pendingSeparate", false)
 
+    val pendingAttachments: List<JSONObject> get() = objects(JSONArray(prefs.getString("pendingFiles", "[]")))
+
+    init {
+        // test.5 kept uploads in the composer slot while waiting for a reply.
+        if (pendingSeparate && !prefs.contains("pendingFiles")) {
+            check(prefs.edit().putString("pendingFiles", JSONArray(attachments).toString())
+                .remove("file").remove("files").commit())
+        }
+    }
+
     fun saveDraft(value: String) {
         prefs.edit().putString("composer", value).apply()
     }
@@ -39,20 +50,22 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             ?: UUID.randomUUID().toString()
         val edit = prefs.edit().putString("pendingText", text).putString("pendingDraft", draft)
             .putString("pendingId", id).putBoolean("pendingSeparate", true)
-        if (!retry) edit.putString("composer", "")
+        if (!retry) edit.putString("composer", "").putString("pendingFiles", JSONArray(attachments).toString())
+            .remove("files").remove("file")
         return edit.commit()
     }
 
     fun restorePendingIfEmpty() {
-        if (pendingSeparate && draft.isEmpty()) {
-            prefs.edit().putString("composer", pendingDraft).remove("pendingSeparate").commit()
+        if (pendingSeparate && draft.isEmpty() && attachments.isEmpty()) {
+            prefs.edit().putString("composer", pendingDraft).putString("files", JSONArray(pendingAttachments).toString())
+                .remove("pendingFiles").remove("pendingSeparate").commit()
         }
     }
 
     fun dismissPending() {
-        val files = attachments
+        val files = pendingAttachments
         prefs.edit().remove("pendingText").remove("pendingDraft").remove("pendingId")
-            .remove("pendingSeparate").remove("file").remove("files").commit()
+            .remove("pendingSeparate").remove("pendingFiles").commit()
         files.forEach(::releaseFile)
     }
 
@@ -91,7 +104,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
 
     internal val formats = AttachmentFormats(activity)
 
-    fun chooseFiles(uris: List<Uri>, finished: (String?) -> Unit) = worker.execute {
+    fun chooseFiles(uris: List<Uri>, finished: (String?) -> Unit) = selectionWorker.execute {
         val result = runCatching { addSelection(uris) }
         ui { finished(result.fold({ it }, { it.localizedMessage ?: "无法读取文件" })) }
     }
@@ -125,8 +138,10 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
         try {
             require(current.size + files.size <= MAX_FILES) { "每条消息最多可添加 4 个附件" }
             if (files.isEmpty()) return rejected.joinToString("；")
-            files.forEach { resolver.takePersistableUriPermission(Uri.parse(it.getString("uri")), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            persistSelection(current + files)
+            synchronized(this) {
+                files.forEach { resolver.takePersistableUriPermission(Uri.parse(it.getString("uri")), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                persistSelection(current + files)
+            }
         } catch (e: Exception) {
             files.forEach(::releaseFile)
             throw e
@@ -135,12 +150,14 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
     }
 
     private fun persistSelection(files: List<JSONObject>) {
-        check(prefs.edit().putString("files", JSONArray(files).toString()).remove("file").remove("pendingId").commit())
+        val edit = prefs.edit().putString("files", JSONArray(files).toString()).remove("file")
+        if (!pendingSeparate) edit.remove("pendingId")
+        check(edit.commit())
     }
 
-    private fun releaseFile(file: JSONObject) {
+    @Synchronized private fun releaseFile(file: JSONObject) {
         val uri = file.getString("uri")
-        if (attachments.any { it.getString("uri") == uri }) return
+        if ((attachments + pendingAttachments).any { it.getString("uri") == uri }) return
         val history = recent
         if ((0 until history.length()).any { i -> turnFiles(history.getJSONObject(i)).any { it.optString("uri") == uri } }) return
         runCatching { activity.contentResolver.releasePersistableUriPermission(
@@ -225,7 +242,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
     fun send(text: String, draftText: String, uploaded: () -> Unit, measured: (ContextUsage) -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
         val failure = runCatching {
             val id = checkNotNull(prefs.getString("pendingId", null))
-            val files = attachments
+            val files = pendingAttachments
             // Check restored drafts from older releases before uploading any part of a group.
             for (file in files) {
                 val uri = Uri.parse(file.getString("uri"))
@@ -234,7 +251,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
             for (file in files) {
                 if (file.optBoolean("uploaded")) continue
                 upload(file)
-                check(prefs.edit().putString("files",JSONArray(files).toString()).remove("file").commit())
+                check(prefs.edit().putString("pendingFiles",JSONArray(files).toString()).commit())
             }
             ui(uploaded)
             val data = JSONObject().put("text",text).put("session",session).put("request",id)
@@ -284,7 +301,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
                 saved.put(turn)
                 val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
                 check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
-                    .remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("file").remove("files").commit()) { "无法保存回复，请重试" }
+                    .remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
                 if (evicted != null) for (file in turnFiles(evicted)) {
                     ImagePreviews.discard(activity, file.getString("id"))
                     releaseFile(file)
@@ -352,6 +369,7 @@ class PiggyClient(private val activity: Activity, private val outdated: () -> Un
     fun close() {
         closed = true
         connections.forEach { it.disconnect() }
+        selectionWorker.shutdownNow()
         contextWorker.shutdownNow()
         worker.shutdownNow()
         downloads.shutdown()
