@@ -85,7 +85,8 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
     </nav>
   </div></header>
   <Capabilities v-if="view === 'capabilities'" />
-  <main v-show="view === 'history'">
+  <div v-show="view === 'history'" class="history-wall">
+  <main>
     <div class="heading"><h1>手机对话记录</h1></div>
     <p v-if="error" class="alert" role="status">{{ error }}</p>
     <section id="thread" ref="thread" aria-label="手机对话记录" tabindex="0">
@@ -123,9 +124,21 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
       </article>
     </section>
   </main>
+  </div>
 </template>
 
 <style scoped>
+.history-wall {
+  --lake: url("../../../../android/app/src/main/res/drawable-nodpi/dusk_lake.webp");
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  background: linear-gradient(to right, #e9d9ec 62%, transparent 88%) center / cover,
+              var(--lake) right center / auto 100% no-repeat #e9d9ec;
+}
+@media (max-aspect-ratio: 1/1) {
+  .history-wall { background: var(--lake) center / cover no-repeat #e9d9ec; }
+}
 nav {display:flex;gap:4px;align-items:center}
 nav a {padding:8px 12px;min-height:44px;display:inline-flex;align-items:center;border-radius:22px;text-decoration:none;color:var(--muted);font-size:.92rem}
 nav a[aria-current="page"] {color:var(--berry);background:#f2e4e7;font-weight:600}

@@ -29,7 +29,7 @@ class ChatActivity : Activity() {
     private val markdown by lazy { chatMarkdown(this) }
     private lateinit var menu: ImageButton
     private var drawer: Dialog? = null
-    private lateinit var chat: LinearLayout
+    private lateinit var chat: FrameLayout
     private lateinit var transcript: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var empty: LinearLayout
@@ -120,8 +120,13 @@ class ChatActivity : Activity() {
         root.addView(header, match, dp(48))
         root.addView(View(this).apply { setBackgroundColor(line) }, match, 1)
 
-        chat = column().apply {
-            setBackgroundResource(R.drawable.chat_paper)
+        chat = FrameLayout(this)
+        chat.addView(ImageView(this).apply {
+            setImageResource(R.drawable.dusk_lake)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, match, match)
+        val chatContent = column().apply {
             setPadding(dp(14), 0, dp(14), dp(8))
         }
         scroll = ScrollView(this).apply { isFillViewport = true; isVerticalScrollBarEnabled = false }
@@ -133,7 +138,7 @@ class ChatActivity : Activity() {
         }
         transcript.addView(empty, LinearLayout.LayoutParams(match, 0, 1f))
         scroll.addView(transcript)
-        chat.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
+        chatContent.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
         val composerCard = column().apply {
             background = shape(Color.WHITE, 26, true)
             setPadding(dp(4), dp(3), dp(4), dp(3))
@@ -191,7 +196,8 @@ class ChatActivity : Activity() {
         }
         composer.addView(send, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(8) })
         composerCard.addView(composer, match, wrap)
-        chat.addView(composerCard, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+        chatContent.addView(composerCard, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+        chat.addView(chatContent, match, match)
         root.addView(chat, LinearLayout.LayoutParams(match, 0, 1f))
         chat.visibility = View.GONE
 
