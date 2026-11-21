@@ -294,6 +294,19 @@ class ChatActivity : Activity() {
             setOnClickListener { dialog.dismiss() }
         }
         panel.addView(current, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(26) })
+        val power = text("后台发送设置", 16f, ink).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), 0, dp(12), 0)
+            setCompoundDrawablesWithIntrinsicBounds(R.drawable.nav_battery, 0, 0, 0)
+            compoundDrawablePadding = dp(12)
+            background = RippleDrawable(ColorStateList.valueOf(0x22694D83), shape(paper, 16), null)
+            isFocusable = true
+            setOnClickListener {
+                dialog.dismiss()
+                BackgroundSettingsDialog().show(fragmentManager, "background-settings")
+            }
+        }
+        panel.addView(power, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(6) })
         panel.addView(Space(this), LinearLayout.LayoutParams(1, 0, 1f))
         panel.addView(text("v" + BuildConfig.VERSION_NAME, 12f, muted).apply { setPadding(dp(12),0,0,0) })
         dialog.setContentView(panel)
