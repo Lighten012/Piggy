@@ -43,6 +43,7 @@ class ChatActivity : Activity() {
     private lateinit var gateTitle: TextView
     private lateinit var gateDetail: TextView
     private lateinit var gateAction: TextView
+    private lateinit var gateDownload: ProgressBar
     private lateinit var gateProgress: ProgressBar
     private lateinit var client: PiggyClient
     private lateinit var updater: AppUpdater
@@ -207,6 +208,12 @@ class ChatActivity : Activity() {
         card.addView(gateDetail, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(10) })
         gateProgress = ProgressBar(this).apply { indeterminateTintList = ColorStateList.valueOf(plum) }
         card.addView(gateProgress, LinearLayout.LayoutParams(dp(26), dp(26)).apply { topMargin = dp(20) })
+        gateDownload = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = ColorStateList.valueOf(plum)
+            progressBackgroundTintList = ColorStateList.valueOf(lavender)
+        }
+        card.addView(gateDownload, LinearLayout.LayoutParams(match, dp(12)).apply { topMargin = dp(16) })
         gateAction = text("", 16f, Color.WHITE).apply {
             gravity = Gravity.CENTER
             background = pill()
@@ -394,7 +401,8 @@ class ChatActivity : Activity() {
         gate.visibility = if (versionCurrent) View.GONE else View.VISIBLE
         controls()
         if (versionCurrent) { refreshContext(); toBottom(); return }
-        gateProgress.visibility = if (state == UpdateState.Checking || state is UpdateState.Downloading) View.VISIBLE else View.GONE
+        gateProgress.visibility = if (state == UpdateState.Checking || state is UpdateState.Preparing) View.VISIBLE else View.GONE
+        gateDownload.visibility = if (state is UpdateState.Downloading) View.VISIBLE else View.GONE
         gateAction.visibility = View.GONE
         gateDetail.visibility = View.VISIBLE
         when (state) {
@@ -402,9 +410,16 @@ class ChatActivity : Activity() {
                 gateTitle.text = "正在确认版本"
                 gateDetail.visibility = View.GONE
             }
+            is UpdateState.Preparing -> {
+                gateTitle.text = state.message
+                gateDetail.visibility = View.GONE
+            }
             is UpdateState.Downloading -> {
                 gateTitle.text = "正在更新到 " + state.name
-                gateDetail.text = "正在下载并校验安装包…"
+                val percent = (state.received * 100 / state.total).toInt()
+                gateDownload.progress = percent
+                gateDetail.text = String.format(java.util.Locale.ROOT, "%s · %d%%\n%.1f / %.1f MB",
+                    state.mode, percent, state.received / 1e6, state.total / 1e6)
             }
             is UpdateState.Ready -> {
                 gateTitle.text = "新版本已准备好"

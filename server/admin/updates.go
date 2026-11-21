@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,14 +22,48 @@ const maxAPKBytes = 128 << 20
 
 var shaPattern = regexp.MustCompile("^[a-f0-9]{64}$")
 
+type engineRegion struct {
+	Offset int64  `json:"offset"`
+	Size   int64  `json:"size"`
+	SHA    string `json:"sha256"`
+}
+
+func findEngine(apk *os.File, size int64) (*engineRegion, error) {
+	archive, err := zip.NewReader(apk, size)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range archive.File {
+		if entry.Name != "assets/office.lopack" || entry.Method != zip.Store {
+			continue
+		}
+		offset, err := entry.DataOffset()
+		if err != nil {
+			return nil, err
+		}
+		n := int64(entry.UncompressedSize64)
+		if offset <= 0 || n <= 0 || n >= size-offset || entry.CompressedSize64 != entry.UncompressedSize64 {
+			return nil, errors.New("invalid embedded engine extent")
+		}
+		h := sha256.New()
+		if _, err := io.CopyN(h, io.NewSectionReader(apk, offset, n), n); err != nil {
+			return nil, err
+		}
+		return &engineRegion{offset, n, hex.EncodeToString(h.Sum(nil))}, nil
+	}
+	// A future APK without a reusable stored asset can still be published in full.
+	return nil, nil
+}
+
 type androidRelease struct {
-	Package string `json:"packageName"`
-	Code    int    `json:"versionCode"`
-	Name    string `json:"versionName"`
-	MinSDK  int    `json:"minSdk"`
-	Size    int64  `json:"size"`
-	SHA     string `json:"sha256"`
-	Signer  string `json:"signerSha256"`
+	Package string        `json:"packageName"`
+	Code    int           `json:"versionCode"`
+	Name    string        `json:"versionName"`
+	MinSDK  int           `json:"minSdk"`
+	Size    int64         `json:"size"`
+	SHA     string        `json:"sha256"`
+	Signer  string        `json:"signerSha256"`
+	Engine  *engineRegion `json:"engine,omitempty"`
 }
 
 func readRelease(dir string) (androidRelease, error) {
@@ -102,8 +137,11 @@ func publishPackage(dir, bundle string) error {
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
+	// Engine metadata is derived from the signed APK by this publisher.
+	next.Engine = nil
 	current, err := readRelease(dir)
 	if err == nil {
+		current.Engine = nil
 		if current.Signer != next.Signer {
 			return errors.New("release signing certificate changed")
 		}
@@ -131,6 +169,12 @@ func publishPackage(dir, bundle string) error {
 	}
 	if size != next.Size || hex.EncodeToString(h.Sum(nil)) != next.SHA {
 		return errors.New("APK size or SHA-256 mismatch")
+	}
+	if next.Code >= 23 {
+		next.Engine, err = findEngine(apk, size)
+		if err != nil {
+			return fmt.Errorf("inspect Android package: %w", err)
+		}
 	}
 	if err = finishFile(apk, filepath.Join(dir, next.SHA+".apk")); err != nil {
 		return err

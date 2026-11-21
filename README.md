@@ -97,3 +97,6 @@ python3 server/admin/prepare-android.py Piggy-signed.apk android-bundle --build-
 版本清单和 APK 默认放在 `/lighten012/projects/Piggy/updates/android`，独立于服务端代码版本；可通过 `PIGGY_UPDATES_DIR` 调整，发布命令与 systemd 服务需使用同一目录。迁移时复制此目录及原有聊天数据、配置，部署相同网关并保留原发布签名。迁移时沿用固定公网地址和端口；如将来确需更改地址，需在原地址发布配置了新地址的签名 APK。
 
 按 CPU 发布时，默认准备 arm64-v8a 的 bundle，并将其余三个同版本、同签名的 bundle 放在其 `variants/<abi>/` 子目录，然后执行一次 publish-android。带 `?abi=<abi>` 的更新清单返回对应架构，旧手机客户端首次使用默认包后会检查本机架构。
+
+从 0.12.1 起，发布命令自动定位 APK 内未再压缩的 `assets/office.lopack`，把其偏移、大小和 SHA-256 写入各架构的更新清单。若本机引擎一致，安卓通过两次 HTTP Range 请求读取该区间前后的内容，在缓存中还原并验证完整签名 APK。可跨版本升级。引擎不同、服务器不支持 Range 或还原校验失败时自动下载完整包。首次安装及从 0.12.0 升级仍使用完整包。代理须保留 Range 和 Content-Range 才能节省下载流量。
+更新页按本次实际网络传输量显示进度、百分比和 MB；增量回退时切换到完整包的进度，下载后单独显示校验状态。

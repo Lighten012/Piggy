@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -14,7 +16,7 @@ import (
 func TestAndroidPublishingAndDownloads(t *testing.T) {
 	dir, bundle := t.TempDir(), t.TempDir()
 	apk := []byte("verified fixture")
-	rel := androidRelease{"dev.pichat", 5, "0.4.0", 24, int64(len(apk)), fmt.Sprintf("%x", sha256.Sum256(apk)), strings.Repeat("a", 64)}
+	rel := androidRelease{"dev.pichat", 5, "0.4.0", 24, int64(len(apk)), fmt.Sprintf("%x", sha256.Sum256(apk)), strings.Repeat("a", 64), nil}
 	put := func(name string, data []byte) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(bundle, name), data, 0644); err != nil {
@@ -78,7 +80,7 @@ func TestCPUPackageSelection(t *testing.T) {
 		if err := os.MkdirAll(path, 0755); err != nil {
 			t.Fatal(err)
 		}
-		m := androidRelease{"dev.pichat", code, "0.12.0", 24, int64(len(payload)), fmt.Sprintf("%x", sha256.Sum256([]byte(payload))), strings.Repeat("a", 64)}
+		m := androidRelease{"dev.pichat", code, "0.12.0", 24, int64(len(payload)), fmt.Sprintf("%x", sha256.Sum256([]byte(payload))), strings.Repeat("a", 64), nil}
 		b, _ := json.Marshal(m)
 		if err := os.WriteFile(filepath.Join(path, "latest.json"), b, 0644); err != nil {
 			t.Fatal(err)
@@ -116,5 +118,57 @@ func TestCPUPackageSelection(t *testing.T) {
 	old, err := readRelease(dir)
 	if err != nil || old.Code != 22 {
 		t.Fatal("changed active release")
+	}
+}
+
+func TestPublishedEngineMatchesHTTPRanges(t *testing.T) {
+	dir, bundle := t.TempDir(), t.TempDir()
+	var apk bytes.Buffer
+	zw := zip.NewWriter(&apk)
+	eng := []byte("pinned-engine")
+	part, err := zw.CreateHeader(&zip.FileHeader{Name: "assets/office.lopack", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(eng); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rel := androidRelease{Package: "dev.pichat", Code: 23, Name: "test", MinSDK: 24, Size: int64(apk.Len()), SHA: fmt.Sprintf("%x", sha256.Sum256(apk.Bytes())), Signer: strings.Repeat("a", 64)}
+	meta, _ := json.Marshal(rel)
+	for name, data := range map[string][]byte{"Piggy.apk": apk.Bytes(), "latest.json": meta} {
+		if err := os.WriteFile(filepath.Join(bundle, name), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := publishPackage(dir, bundle); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := readRelease(dir)
+	if err != nil || got.Engine == nil {
+		t.Fatalf("missing metadata: %v", err)
+	}
+	e := got.Engine
+	if e.SHA != fmt.Sprintf("%x", sha256.Sum256(eng)) || e.Size != int64(len(eng)) {
+		t.Fatal(e)
+	}
+	fetch := func(start, end int64) []byte {
+		req := httptest.NewRequest("GET", updatePrefix+rel.SHA+".apk", nil)
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+		res := httptest.NewRecorder()
+		androidUpdates(dir, res, req)
+		if res.Code != 206 || res.Header().Get("Content-Range") != fmt.Sprintf("bytes %d-%d/%d", start, end, rel.Size) {
+			t.Fatal(res)
+		}
+		return res.Body.Bytes()
+	}
+	restored := append(fetch(0, e.Offset-1), eng...)
+	restored = append(restored, fetch(e.Offset+e.Size, rel.Size-1)...)
+	if !bytes.Equal(restored, apk.Bytes()) {
+		t.Fatal("reconstructed APK differs")
 	}
 }

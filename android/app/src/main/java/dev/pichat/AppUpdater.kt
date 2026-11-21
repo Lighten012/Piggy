@@ -20,7 +20,8 @@ import javax.net.ssl.HttpsURLConnection
 sealed class UpdateState {
     object Checking : UpdateState()
     object Current : UpdateState()
-    data class Downloading(val name: String) : UpdateState()
+    data class Preparing(val message: String) : UpdateState()
+    data class Downloading(val name: String, val mode: String, val received: Long, val total: Long) : UpdateState()
     data class Ready(val name: String) : UpdateState()
     data class Failed(val message: String) : UpdateState()
 }
@@ -63,13 +64,21 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
         }
     }
 
-    private fun <T> read(url: URL, consume: (InputStream) -> T): T {
+    private fun <T> read(url: URL, range: LongRange? = null, size: Long = 0, consume: (InputStream) -> T): T {
         val connection = url.openConnection() as HttpsURLConnection
         try {
             connection.connectTimeout = 10000
             connection.readTimeout = 30000
             connection.instanceFollowRedirects = false
-            check(connection.responseCode == 200) { "更新服务器返回 HTTP ${connection.responseCode}" }
+            connection.setRequestProperty("Accept-Encoding", "identity")
+            if (range != null) connection.setRequestProperty("Range", "bytes=${range.first}-${range.last}")
+            val status = connection.responseCode
+            if (range == null) {
+                check(status == 200) { "更新服务器返回 HTTP $status" }
+            } else {
+                check(status == 206 && connection.getHeaderField("Content-Range") ==
+                    "bytes ${range.first}-${range.last}/$size") { "服务器未返回正确的更新片段" }
+            }
             return connection.inputStream.use(consume)
         } finally { connection.disconnect() }
     }
@@ -82,16 +91,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
     private fun checkAPK(file: File, code: Long, size: Long, sha: String, signer: String) {
         check(file.length() == size) { "更新包长度不符" }
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().buffered().use { input ->
-            val buf = ByteArray(32768)
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                digest.update(buf, 0, n)
-            }
-        }
-        check(hex(digest.digest()) == sha) { "更新包校验失败" }
+        check(file.inputStream().use(::sha256) == sha) { "更新包校验失败" }
         val apk = manager.getPackageArchiveInfo(file.absolutePath, flags)
         check(apk != null && apk.packageName == activity.packageName && version(apk) == code &&
             signers(apk) == setOf(signer) && signers(installed) == setOf(signer)) { "更新包的应用、版本或签名不匹配" }
@@ -124,27 +124,57 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
         val signer = manifest.getString("signerSha256")
         check(digest.matches(Regex("[0-9a-f]{64}")) && size in 1..134217728L && signers(installed) == setOf(signer)) { "更新清单校验失败" }
         val name = manifest.getString("versionName")
-        activity.runOnUiThread { if (!closed) changed(UpdateState.Downloading(name)) }
+        fun report(state: UpdateState) = activity.runOnUiThread { if (!closed) changed(state) }
+        fun verify(file: File) {
+            report(UpdateState.Preparing("正在校验安装包"))
+            checkAPK(file, code, size, digest, signer)
+        }
         cache.mkdirs()
         val file = File(cache, "$digest.apk")
-        if (file.isFile && runCatching { checkAPK(file, code, size, digest, signer) }.isFailure) file.delete()
+        if (file.isFile && runCatching { verify(file) }.isFailure) file.delete()
         if (!file.isFile) {
             val temp = File.createTempFile("download-", ".apk", cache)
             try {
-                read(URL(root + "$digest.apk?abi=$abi&v=$code")) { input ->
-                    temp.outputStream().use { out ->
-                        var total = 0L
-                        val buf = ByteArray(32768)
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n < 0) break
-                            total += n
-                            check(!closed && total <= size) { "更新下载已中断" }
-                            out.write(buf, 0, n)
-                        }
-                    }
+                val region = manifest.optJSONObject("engine")?.let {
+                    EngineRegion(it.optLong("offset"), it.optLong("size"), it.optString("sha256"))
                 }
-                checkAPK(temp, code, size, digest, signer)
+                val url = URL(root + "$digest.apk?abi=$abi&v=$code")
+                report(UpdateState.Preparing("正在准备更新"))
+                var attemptedRanges = false
+                downloadApk(temp, size, region, { activity.assets.open("office.lopack") },
+                    fetch = { range, out ->
+                        val expected = range?.let { it.last - it.first + 1 } ?: size
+                        val planned = if (range == null) size else size - requireNotNull(region).size
+                        val before = if (range != null && range.first > 0) planned - expected else 0L
+                        val mode = when {
+                            range != null -> "增量下载"
+                            attemptedRanges -> "已切换为完整下载"
+                            else -> "完整下载"
+                        }
+                        if (range != null) attemptedRanges = true
+                        fun progress(bytes: Long) = report(UpdateState.Downloading(name, mode, before + bytes, planned))
+                        progress(0)
+                        var lastReport = android.os.SystemClock.elapsedRealtime()
+                        read(url, range, size) { input ->
+                            val buf = ByteArray(32768)
+                            var total = 0L
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                total += n
+                                check(!closed && total <= expected) { "更新下载已中断" }
+                                out.write(buf, 0, n)
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                if (total == expected || now - lastReport >= 150) {
+                                    progress(total)
+                                    lastReport = now
+                                }
+                            }
+                            check(total == expected) { "更新下载不完整" }
+                        }
+                    },
+                    verify = ::verify,
+                    closed = { closed })
                 check(temp.renameTo(file)) { "无法保存更新包" }
             } finally { temp.delete() }
         }
