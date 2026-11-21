@@ -1,3 +1,4 @@
+import { persona } from "./persona.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -69,7 +70,6 @@ function activeSettings() {
   if (!validSettings(current)) throw new Error("Unsupported stored model settings");
   return current;
 }
-const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。遇到新闻、需要核实的近期变化或用户明确要求联网时，使用网页搜索核实，按来源的发布日期和事件日期回答，提供可点击的行内出处。无法查证时如实说明。用户要求图片或可下载的文件时，调用对应工具实际生成。使用代码解释器生成的文件请在最终答复中链接到 sandbox:/mnt/data/ 下的成品。用户追问旧附件时先查看原消息。上下文里只剩摘要而需要原件时，用文件名或聊天关键词查找原始轮次，再用 read_chat_context 的 includeAttachments 读取那一轮的附件。";
 type FileMessage = Message & {fileRefs?:Attachment[]};
 function fileParts(files:Attachment[]) {
   return files.map(file => file.expires <= Date.now() ? {type:"input_text",text:`附件已过期：${file.name}`} :

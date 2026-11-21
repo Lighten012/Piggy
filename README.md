@@ -89,6 +89,7 @@ Go 将匿名、带版本号的 `POST /mobile/attachments` 流式转给 Pi。Pi �
 | 变量 | 用途 |
 |---|---|
 | PI_API_KEY | Pi 专用的 OpenAI 密钥 |
+| PIGGY_COMPANION_NAME | 可选。在本环境私有配置中填写 Piggy 所代表的人的名字，重启 Pi 服务后生效 |
 | PI_MODEL | 首次使用的模型，默认 gpt-6.2-sol；网页已保存的设置优先 |
 | PIGGY_ADMIN_PASSWORD | 网页账号 piggy 的独立密码 |
 | PIGGY_WORKER_TOKEN | Go 与 Pi 之间的随机内部密钥 |

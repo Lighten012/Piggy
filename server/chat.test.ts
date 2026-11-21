@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { defaultSettings, modelChoices } from "./model-settings.ts";
+import { persona } from "./persona.ts";
 import { capabilityCatalog } from "./capabilities.ts";
 import { DatabaseSync } from "node:sqlite";
 import { Journal } from "./journal.ts";
@@ -74,7 +75,7 @@ test("records accepted mobile turns and restores context after restart", async t
       .map((item: {content:{text:string}[]}) => item.content.map(part => part.text).join(""));
     assert.ok(payload.input.some((item: {role?:string;content:unknown}) =>
       item.role === "developer" && typeof item.content === "string" &&
-      item.content.includes("个人助手 Piggy") && item.content.includes(skillBody)));
+      item.content.includes(persona) && item.content.includes(skillBody)));
     if (users.at(-1) === "turn 101") {
       const replies = payload.input.filter((item: {role?:string}) => item.role === "assistant");
       assert.equal(replies.length,100);
