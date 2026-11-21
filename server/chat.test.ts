@@ -30,6 +30,13 @@ test("records accepted mobile turns and restores context after restart", async t
   const fixture = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
+    if (req.url === "/v1/files" || req.url?.startsWith("/v1/vector_stores")) {
+      res.setHeader("content-type","application/json");
+      if (req.method==="GET") { res.writeHead(404); res.end("{}"); return; }
+      res.end(JSON.stringify(req.url === "/v1/files" ? {id:"file_fixture"} :
+        req.url === "/v1/vector_stores" ? {id:"vs_fixture"} : {status:"completed"}));
+      return;
+    }
     const payload = JSON.parse(body);
     if (req.url === "/v1/responses" && typeof payload.input === "string") {
       assert.equal(payload.store,false);
@@ -38,7 +45,7 @@ test("records accepted mobile turns and restores context after restart", async t
         const {最新用户原话: question} = JSON.parse(payload.input);
         res.writeHead(200,{"content-type":"application/json"});
         const allowed = question === "请记住：只喝温水" || question === "帮我记一下刚才那条";
-        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({authorized:allowed,categories:allowed?["饮品"]:[]})}]}]}));
+        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:allowed?"YES":"NO"}]}]}));
         return;
       }
       summaries.push(payload.input);
@@ -84,7 +91,7 @@ test("records accepted mobile turns and restores context after restart", async t
     if (["请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1))
         && payload.input.at(-1).type !== "function_call_output") {
       const item = {type:"function_call",name:"save_memory",id:"fc_test"+histories.length,
-        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify({text:"只喝温水",keywords:["喝","温水"]})};
+        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify({text:"只喝温水"})};
       for (const event of [
         {type:"response.output_item.added",output_index:0,item:{...item,arguments:""}},
         {type:"response.output_item.done",output_index:0,item},

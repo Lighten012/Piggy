@@ -6,89 +6,73 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Journal } from "./journal.ts";
 
-test("legacy keywords, scoped recall and original turns survive compaction and restart", t => {
-  const dir = mkdtempSync(join(tmpdir(),"piggy-recall-"));
-  t.after(() => rmSync(dir,{force:true,recursive:true}));
-  const path = join(dir,"test.sqlite");
-  const sql = new DatabaseSync(path);
+test("index only saved originals, resume legacy and interrupted uploads and scope all search hits",async t => {
+  const dir=mkdtempSync(join(tmpdir(),"piggy-vectors-"));
+  const path=join(dir,"chat.sqlite"), sql=new DatabaseSync(path);
+  t.after(()=>{sql.close();rmSync(dir,{force:true,recursive:true});});
   sql.exec(`CREATE TABLE memories(id INTEGER PRIMARY KEY,conversation TEXT NOT NULL,turn_id INTEGER NOT NULL,
-    created INTEGER NOT NULL,content TEXT NOT NULL,UNIQUE(conversation,content));
-    INSERT INTO memories VALUES(1,'a',2,1,'我喝咖啡喜欢燕麦奶')`);
-  let journal = new Journal(path);
-  const first = journal.begin("a","1","周五早餐喝咖啡");
-  const long = "说明".repeat(800)+"最后的凭据 LILAC-25";
-  journal.complete(first,long,[]);
-  const save = journal.begin("a","2","帮我记下刚才那条");
-  journal.saveMemory(save,"聚会喝咖啡要全脂奶",["喝","咖啡","全脂奶","无关词"]);
-  journal.complete(save,"已保存",[]);
-  const outsider = journal.begin("b","1","保密信息：咖啡");
-  journal.saveMemory(outsider,"咖啡",["咖啡"]);
-  journal.complete(outsider,"只有另一台手机能读",[]);
-  const recent = journal.begin("a","3","请查之前喝什么");
+    created INTEGER NOT NULL,content TEXT NOT NULL,keywords TEXT,categories TEXT,UNIQUE(conversation,content));
+    INSERT INTO memories VALUES(1,'a',1,1,'我喜欢吃草莓','["吃"]','["水果"]')`);
+  const uploads:string[]=[], searches:string[]=[];
+  let stores=0, rejectAttach=true;
+  t.mock.method(globalThis,"fetch",async (url:string,init:RequestInit)=>{
+    const path=new URL(url).pathname,method=init.method;
+    if (path==="/vector_stores") return Response.json({id:"vs_"+ ++stores});
+    if (path==="/files") {
+      const file=(init.body as FormData).get("file") as File;
+      uploads.push(await file.text());
+      return Response.json({id:"file_"+uploads.length});
+    }
+    if (path.endsWith("/search")) {
+      searches.push(path+":"+JSON.parse(String(init.body)).query);
+      return Response.json({data:["file_2","file_1","file_1"].map(file_id=>({file_id,score:.9}))});
+    }
+    if (method==="GET") return Response.json({},{status:404});
+    if (rejectAttach) {rejectAttach=false;return Response.json({},{status:503});}
+    return Response.json({status:"completed"});
+  });
+  let journal=new Journal(path), index=journal.memoryIndex("https://fixture.invalid","fake");
+  const source=journal.begin("a","save","请记住我喜欢吃草莓");journal.complete(source,"记住了",[]);
+  const other=journal.begin("b","save","我只喝茶");
+  const id=journal.saveMemory(other,"我只喝茶");
+  assert.equal(journal.saveMemory(other,"我只喝茶"),id);
+  journal.complete(other,"好",[]);
+  const chat=journal.begin("a","news","今天的天气");journal.complete(chat,"晴天",[]);
+  assert.deepEqual(await index.search("empty","水果"),{candidates:[],indexingPending:false});
+  await assert.rejects(index.syncNext(),/503/);
+  assert.equal((await index.search("a","水果")).indexingPending,true);
+  journal=new Journal(path);index=journal.memoryIndex("https://fixture.invalid","fake");
+  await Promise.all([index.ensure(1),index.ensure(1)]);
+  await index.syncNext();
+  assert.deepEqual(uploads,["我喜欢吃草莓","我只喝茶"]);
+  assert.equal(stores,2);
   sql.exec("DELETE FROM active_context WHERE conversation='a'");
-  const tags = sql.prepare("SELECT keywords FROM memories WHERE id=?");
-  assert.ok(JSON.parse(String(tags.get(1)!.keywords)).includes("喝"));
-  assert.ok(JSON.parse(String(tags.get(2)!.keywords)).includes("全脂奶"));
-  assert.ok(!JSON.parse(String(tags.get(2)!.keywords)).includes("无关词"));
-  const memories = journal.searchMemory("a",["燕麦奶","咖啡"]).candidates;
-  assert.deepEqual(memories.map(x=>x.memoryId),[1,2]);
-  assert.deepEqual(journal.searchMemory("a",['" OR *','无此项']).candidates,[]);
-  assert.deepEqual(journal.searchMemory("a",["的",""]).candidates,[]);
-  assert.deepEqual(journal.readChatContext("b",recent,"memory",1).turns,[]);
-  assert.deepEqual(journal.readChatContext("b",recent,"turn",Number(first)).turns,[]);
-  assert.deepEqual(journal.searchChatHistory("a",recent,["保密信息"]).matches,[]);
-  assert.deepEqual(journal.searchChatHistory("a",recent,["请查之前"]).matches,[]);
-  const match = journal.searchChatHistory("a",recent,["lilac"]).matches[0];
-  assert.equal(match.turnId,Number(first));
-  assert.match(match.answer,/LILAC-25/);
-  const context = journal.readChatContext("a",recent,"memory",1);
-  assert.equal(context.anchorTurnId,Number(save));
-  assert.deepEqual(context.turns.map(x=>x.turnId),[Number(first),Number(save)]);
-  const rest = journal.readChatContext("a",recent,"turn",Number(first),context.turns[0].nextOffset);
-  assert.equal(context.turns[0].answer + rest.turns[0].answer,long);
-  journal = new Journal(path);
-  assert.equal(journal.searchMemory("a",["燕麦奶"]).candidates[0].memoryId,1);
-  assert.equal(sql.prepare("SELECT count(*) AS n FROM memory_terms").get()!.n,3);
-  sql.close();
+  const hits=await index.search("a","我喜欢什么水果？");
+  assert.equal(hits.indexingPending,false);
+  assert.deepEqual(hits.candidates.map(row=>row.text),["我喜欢吃草莓"]);
+  assert.deepEqual((await index.search("b","饮品")).candidates.map(row=>row.text),["我只喝茶"]);
+  assert.ok(searches.includes("/vector_stores/vs_1/search:我喜欢什么水果？"));
+  assert.equal(journal.readChatContext("a",99,"memory",1).anchorTurnId,1);
+  assert.deepEqual(journal.readChatContext("b",99,"memory",1).turns,[]);
+  assert.equal(journal.searchChatHistory("a",99,["天气"]).matches.length,1);
+  assert.equal(await index.syncNext(),false);
 });
 
-test("later pages are reachable for tied keyword matches", () => {
-  const journal = new Journal(":memory:");
-  for (let n=0;n<10;n++) {
-    const id = journal.begin("a",String(n),"咖啡");
-    journal.saveMemory(id,"咖啡 "+n,["咖啡"]);
-    journal.complete(id,"好的",[]);
+test("historical context remains scoped, paged and readable beyond a long excerpt", () => {
+  const journal=new Journal(":memory:");
+  const long="说明".repeat(800)+"最后的凭据 LILAC-25";
+  const first=journal.begin("a","first","周五早餐喝咖啡");
+  journal.complete(first,long,[]);
+  for (let n=0;n<9;n++) {
+    const turn=journal.begin("a",String(n),"咖啡 "+n);
+    journal.complete(turn,"好",[]);
   }
-  const first = journal.searchMemory("a",["咖啡"]);
-  assert.equal(first.candidates.length,8);
-  const rest = journal.searchMemory("a",["咖啡"],first.nextOffset);
-  assert.equal(rest.candidates.length,2);
-  assert.equal(new Set([...first.candidates,...rest.candidates].map(row=>row.memoryId)).size,10);
-  assert.equal(journal.searchChatHistory("a",11,["咖啡"],8).matches.length,2);
-});
-
-test("category-only and exact recall preserve evidence, source, scope and pagination", () => {
-  const db = new Journal(":memory:");
-  function save(session:string,text:string,tags:string[]) {
-    const turn = db.begin(session,text,"记住："+text);
-    db.saveMemory(turn,text,[],tags);
-    db.complete(turn,"好",[]);
-    return Number(turn);
-  }
-  const strawberry = save("a","我喜欢吃草莓",["水果","食物"]);
-  save("a","我不喜欢芒果",["水果","食物"]);
-  save("a","妈妈喜欢桃子",["水果","食物"]);
-  save("a","我只喜欢草莓味蛋糕",["蛋糕","甜点"]);
-  save("a","我的苹果手机坏了",["手机","电子产品"]);
-  save("b","我喜欢吃香蕉",["水果"]);
-  const entries = db.searchMemory("a",["水果"]).candidates;
-  assert.deepEqual(entries.map(e=>e.text).sort(),["妈妈喜欢桃子","我不喜欢芒果","我喜欢吃草莓"].sort());
-  const hit = entries.find(e=>e.text==="我喜欢吃草莓")!;
-  assert.deepEqual(hit.categories,["水果","食物"]);
-  assert.equal(db.readChatContext("a",99,"memory",Number(hit.memoryId)).anchorTurnId,strawberry);
-  assert.ok(db.searchMemory("a",["草莓"]).candidates.some(e=>e.memoryId===hit.memoryId));
-  for (let i=0;i<9;i++) save("a","活动 "+i,["运动"]);
-  const first = db.searchMemory("a",["运动"]);
-  assert.equal(first.candidates.length,8);
-  assert.equal(db.searchMemory("a",["运动"],first.nextOffset).candidates.length,1);
+  const current=journal.begin("a","last","请查之前喝什么");
+  assert.equal(journal.searchChatHistory("a",current,["咖啡"],8).matches.length,2);
+  assert.deepEqual(journal.searchChatHistory("a",current,["请查之前"]).matches,[]);
+  assert.deepEqual(journal.searchChatHistory("b",current,["咖啡"]).matches,[]);
+  assert.match(journal.searchChatHistory("a",current,["lilac"]).matches[0].answer,/LILAC-25/);
+  const excerpt=journal.readChatContext("a",current,"turn",Number(first)).turns[0];
+  const tail=journal.readChatContext("a",current,"turn",Number(first),excerpt.nextOffset).turns[0];
+  assert.equal(excerpt.answer+tail.answer,long);
 });

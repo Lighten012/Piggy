@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import { memoryKeywords, queryKeywords } from "./memory-keywords.ts";
+import { MemoryIndex } from "./memory-index.ts";
+import { queryKeywords } from "./memory-keywords.ts";
 import type { ReplyFile } from "./reply-files.ts";
 import { previewType } from "./retention.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -40,7 +41,7 @@ export class Journal {
       );
       CREATE TABLE IF NOT EXISTS memories (
         id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, turn_id INTEGER NOT NULL REFERENCES turns(id),
-        created INTEGER NOT NULL, content TEXT NOT NULL, keywords TEXT, UNIQUE(conversation,content)
+        created INTEGER NOT NULL, content TEXT NOT NULL, UNIQUE(conversation,content)
       );
       CREATE TABLE IF NOT EXISTS attachments (
         conversation TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
@@ -69,7 +70,7 @@ export class Journal {
       CREATE INDEX IF NOT EXISTS turn_files_attachment ON turn_files(attachment);
       INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
     `);
-    this.initializeMemoryIndex();
+    MemoryIndex.migrate(this.db);
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
       this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");
@@ -83,48 +84,8 @@ export class Journal {
       .run(model,effort,tier);
   }
 
-  private initializeMemoryIndex() {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name='keywords'").get())
-        this.db.exec("ALTER TABLE memories ADD COLUMN keywords TEXT");
-      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name='categories'").get()) {
-        this.db.exec(`
-          ALTER TABLE memories ADD COLUMN categories TEXT;
-          DROP TRIGGER IF EXISTS memory_terms_insert;
-          DROP TRIGGER IF EXISTS memory_terms_update;
-          DROP TRIGGER IF EXISTS memory_terms_delete;
-          DROP TABLE IF EXISTS memory_terms;
-          CREATE VIRTUAL TABLE memory_terms USING fts5(keywords,categories);
-          INSERT INTO memory_terms(rowid,keywords,categories) SELECT id,keywords,categories FROM memories;
-        `);
-      }
-      this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS memory_terms_insert AFTER INSERT ON memories BEGIN
-          INSERT INTO memory_terms(rowid,keywords,categories) VALUES(new.id,new.keywords,new.categories);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memory_terms_update AFTER UPDATE OF keywords,categories ON memories BEGIN
-          DELETE FROM memory_terms WHERE rowid=old.id;
-          INSERT INTO memory_terms(rowid,keywords,categories) VALUES(new.id,new.keywords,new.categories);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memory_terms_delete AFTER DELETE ON memories BEGIN
-          DELETE FROM memory_terms WHERE rowid=old.id;
-        END;
-      `);
-      const batch = this.db.prepare("SELECT id,content FROM memories WHERE id>? AND keywords IS NULL ORDER BY id LIMIT 32");
-      const update = this.db.prepare("UPDATE memories SET keywords=? WHERE id=?");
-      let cursor = 0;
-      for (let rows=batch.all(cursor); rows.length; rows=batch.all(cursor)) {
-        for (const row of rows) {
-          update.run(JSON.stringify(memoryKeywords(String(row.content))),row.id);
-          cursor = Number(row.id);
-        }
-      }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+  memoryIndex(baseUrl:string,key:string) {
+    return new MemoryIndex(this.db,baseUrl,key);
   }
 
   private initializeContext() {
@@ -269,27 +230,12 @@ export class Journal {
       throw error;
     }
   }
-  saveMemory(turn:number|bigint, content:string, hints:readonly string[] = [], categories:readonly string[] = []) {
+  saveMemory(turn:number|bigint, content:string) {
     const source = this.db.prepare("SELECT conversation FROM turns WHERE id=? AND status='pending'").get(turn);
     if (!source) throw new Error("当前消息已结束，无法保存记忆。");
-    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content,keywords,categories) VALUES(?,?,?,?,?,?)
-      ON CONFLICT(conversation,content) DO UPDATE SET categories=excluded.categories WHERE memories.categories IS NULL`).run(source.conversation,turn,Date.now(),content,JSON.stringify(memoryKeywords(content,hints)),JSON.stringify(categories));
-  }
-
-  searchMemory(conversation:string, keywords:string[], offset=0) {
-    const terms = queryKeywords(keywords);
-    if (!terms.length) return {candidates:[]};
-    // Quote each FTS phrase literally, including embedded double quotes.
-    const match = terms.map(term => '"' + term.replaceAll('"','""') + '"').join(" OR ");
-    const rows = this.db.prepare(`
-      SELECT m.id,m.created,m.content,m.categories FROM memory_terms JOIN memories m ON m.id=memory_terms.rowid
-      WHERE memory_terms MATCH ? AND m.conversation=?
-      ORDER BY bm25(memory_terms,2.0,1.0),m.created DESC,m.id DESC LIMIT 9 OFFSET ?
-    `).all(match,conversation,offset);
-    const candidates = rows.slice(0,8).map(row => ({
-      memoryId:row.id,created:row.created,categories:JSON.parse(String(row.categories ?? "[]")),text:keywordExcerpt(String(row.content),terms,1200),
-    }));
-    return {candidates,nextOffset:rows.length > 8 ? offset+8 : undefined};
+    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content) VALUES(?,?,?,?)
+      ON CONFLICT(conversation,content) DO NOTHING`).run(source.conversation,turn,Date.now(),content);
+    return Number(this.db.prepare("SELECT id FROM memories WHERE conversation=? AND content=?").get(source.conversation,content)!.id);
   }
 
   searchChatHistory(conversation:string, before:number|bigint, keywords:string[], offset=0) {

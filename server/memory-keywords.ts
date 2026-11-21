@@ -12,17 +12,6 @@ function usefulPhrase(term:string) {
   return term.length <= 100 && /[\p{L}\p{N}]/u.test(term) && !stopWords.has(term);
 }
 
-export function memoryKeywords(content:string, hints:readonly string[] = []) {
-  const text = normalize(content);
-  const terms = new Set<string>();
-  for (const hint of hints) {
-    const term = normalize(hint);
-    if (usefulPhrase(term) && text.includes(term)) terms.add(term);
-  }
-  addWords(terms,text);
-  return [...terms];
-}
-
 export function queryKeywords(keywords:readonly string[]) {
   const terms = new Set<string>();
   for (const keyword of keywords) {

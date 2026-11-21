@@ -53,6 +53,15 @@ if (fixturePort && (!/^\d{1,5}$/.test(fixturePort) || process.env.PI_API_KEY)) {
 }
 const baseUrl = fixturePort ? `http://127.0.0.1:${fixturePort}/v1` : "https://api.openai.com/v1";
 const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
+const memoryIndex = journal.memoryIndex(baseUrl,apiKey ?? "");
+async function syncMemories() {
+  let delay = 30000;
+  try { if (await memoryIndex.syncNext()) delay = 1000; }
+  catch { console.warn("Memory indexing deferred; will retry"); }
+  finally { setTimeout(syncMemories,delay).unref(); }
+}
+if (apiKey) void syncMemories();
+
 function activeSettings() {
   const current = journal.modelSettings() ?? defaultSettings;
   if (!validSettings(current)) throw new Error("Unsupported stored model settings");
@@ -245,7 +254,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     cache = {input,tools,usage};
     return usage;
   }
-  const toolsForTurn = [memoryTool(journal,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,conversation,id)];
+  const toolsForTurn = [memoryTool(journal,memoryIndex,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id)];
   const agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,files,systemPrompt,count,
     tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
   const stop = () => { controller.abort(); agent.abort(); };
