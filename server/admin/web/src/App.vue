@@ -134,11 +134,23 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  background: linear-gradient(to right, #e9d9ec 62%, transparent 88%) center / cover,
-              var(--lake) right center / auto 100% no-repeat #e9d9ec;
+  position: relative;
+  isolation: isolate;
+  background: #e9d9ec;
+}
+.history-wall::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 auto;
+  height: 100%;
+  aspect-ratio: 852 / 1846;
+  z-index: -1;
+  background: linear-gradient(to right, #e9d9ec, transparent 65%), var(--lake) center / cover;
+  pointer-events: none;
 }
 @media (max-aspect-ratio: 1/1) {
   .history-wall { background: var(--lake) center / cover no-repeat #e9d9ec; }
+  .history-wall::before { display: none; }
 }
 nav {display:flex;gap:4px;align-items:center}
 nav a {padding:8px 12px;min-height:44px;display:inline-flex;align-items:center;border-radius:22px;text-decoration:none;color:var(--muted);font-size:.92rem}
