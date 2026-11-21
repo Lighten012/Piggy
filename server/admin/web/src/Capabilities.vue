@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
+import { renderMarkdown } from "./markdown.js";
+
 const catalog = ref(null);
 const loading = ref(false);
 const error = ref("");
@@ -89,7 +91,7 @@ onUnmounted(() => controller.abort());
         <p v-if="!catalog.skills.length" class="empty-note">当前服务端未加载任何技能。</p>
         <details v-for="skill in catalog.skills" :key="skill.name">
           <summary><strong>{{ skill.name }}</strong><small>{{ skill.description }}</small></summary>
-          <pre>{{ skill.instructions }}</pre>
+          <div class="markdown skill-body" v-html="renderMarkdown(skill.instructions)"></div>
         </details>
       </section>
       <section aria-labelledby="tools-title">
@@ -126,6 +128,7 @@ h2 span {font-size:.85rem;font-weight:500;padding:0 9px;border-radius:12px;color
 details {margin-top:12px;border-top:1px solid var(--line);overflow-wrap:anywhere}
 summary {cursor:pointer;padding:12px 0 4px}
 small {display:block;margin:3px 0 0 18px;font:inherit;font-size:.9rem}
+.skill-body {max-inline-size:72ch;padding:6px 0 12px;line-height:1.65}
 pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:25rem;overflow:auto;padding:12px;border-radius:8px;background:#f7f1f2;font-size:.85rem}
 @media(max-width:600px) {section {padding:16px}}
 </style>

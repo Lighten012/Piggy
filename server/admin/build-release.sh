@@ -21,6 +21,8 @@ npm ci --omit=dev --ignore-scripts --no-audit --no-fund
   "--define:process.env.PIGGY_RELEASE_ENVIRONMENT=\"$environment\"" \
   '--banner:js=import { createRequire as __createRequire } from "node:module";const require=__createRequire(import.meta.url);' \
   --outfile="$out/pi.mjs"
+mkdir -p "$out/skills"
+cp -R skills/. "$out/skills/"
 cd "$admin"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.releaseEnvironment=$environment" -o "$out/piggy-admin" .
 if [ "$environment" = production ]; then

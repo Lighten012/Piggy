@@ -262,7 +262,11 @@ class ChatActivity : Activity() {
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
         dialog.setTitle("侧边栏")
         val panel = column().apply {
-            background = shape(paper, 0)
+            val radius = dp(28).toFloat()
+            background = GradientDrawable().apply {
+                setColor(paper)
+                cornerRadii = floatArrayOf(0f, 0f, radius, radius, radius, radius, 0f, 0f)
+            }
             setPadding(dp(18), dp(14), dp(18), dp(20))
         }
         ViewCompat.setAccessibilityPaneTitle(panel, "侧边栏")

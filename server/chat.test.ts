@@ -19,6 +19,8 @@ test("records accepted mobile turns and restores context after restart", async t
   const belowThreshold = limit * 0.79;
   const dir = mkdtempSync(join(tmpdir(),"piggy-test-"));
   t.after(() => rmSync(dir,{recursive:true,force:true}));
+  const skillBody = capabilityCatalog().skills.find(skill => skill.name === "explicit-memory")!.instructions;
+  assert.match(skillBody,/^## /);
   const histories: string[][] = [];
   const fileInputs: string[][] = [];
   const summaries:string[] = [];
@@ -53,7 +55,8 @@ test("records accepted mobile turns and restores context after restart", async t
     const users = payload.input.filter((item: {role?:string}) => item.role === "user")
       .map((item: {content:{text:string}[]}) => item.content.map(part => part.text).join(""));
     assert.ok(payload.input.some((item: {role?:string;content:unknown}) =>
-      item.role === "developer" && JSON.stringify(item.content).includes("个人助手 Piggy")));
+      item.role === "developer" && typeof item.content === "string" &&
+      item.content.includes("个人助手 Piggy") && item.content.includes(skillBody)));
     if (users.at(-1) === "turn 101") {
       const replies = payload.input.filter((item: {role?:string}) => item.role === "assistant");
       assert.equal(replies.length,100);
