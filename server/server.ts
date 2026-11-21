@@ -1,4 +1,3 @@
-import { organize, MemoryPlanError } from "./memory-planner.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -58,17 +57,6 @@ const memoryIndex = journal.memoryIndex(baseUrl,apiKey ?? "");
 async function syncMemories() {
   let delay = 30000;
   try {
-    const legacy=journal.topics.nextLegacy(undefined,true);
-    if (legacy) {
-      try {
-        await organize(journal.topics,legacy,legacy.quote,undefined,resolveModel(activeSettings(),baseUrl),apiKey!);
-      } catch (error) {
-        journal.topics.deferLegacy(legacy.conversation);
-        const reason=error instanceof MemoryPlanError ? error.reason : error instanceof Error ? error.name : "unknown";
-        console.warn("Memory migration deferred for legacy row",legacy.legacy,reason);
-      }
-      delay=1000;
-    }
     if (await memoryIndex.syncNext()) delay=1000;
   }
   catch { console.warn("Memory indexing deferred; will retry"); }

@@ -1,4 +1,4 @@
-import { MemoryTopics } from "./memory-topics.ts";
+import { MemoryStore } from "./memory-store.ts";
 import { DatabaseSync } from "node:sqlite";
 import { MemoryIndex } from "./memory-index.ts";
 import { queryKeywords } from "./memory-keywords.ts";
@@ -28,7 +28,7 @@ function keywordExcerpt(text:string, terms:string[], size:number) {
 
 export class Journal {
   private db: DatabaseSync;
-  readonly topics:MemoryTopics;
+  readonly memories:MemoryStore;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(`
@@ -41,10 +41,6 @@ export class Journal {
         created INTEGER NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL CHECK(status IN ('pending','complete','failed')),
         UNIQUE(conversation,request)
-      );
-      CREATE TABLE IF NOT EXISTS memories (
-        id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, turn_id INTEGER NOT NULL REFERENCES turns(id),
-        created INTEGER NOT NULL, content TEXT NOT NULL, UNIQUE(conversation,content)
       );
       CREATE TABLE IF NOT EXISTS attachments (
         conversation TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
@@ -73,8 +69,7 @@ export class Journal {
       CREATE INDEX IF NOT EXISTS turn_files_attachment ON turn_files(attachment);
       INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
     `);
-    MemoryIndex.migrate(this.db);
-    this.topics=new MemoryTopics(this.db);
+    this.memories=new MemoryStore(this.db);
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
       this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");

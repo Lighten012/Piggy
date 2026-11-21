@@ -1,11 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { loadSkills } from "./skill-loader.ts";
 import { hostedTools } from "./hosted-tools.ts";
-import { saveMemoryDeclaration, searchMemoryDeclaration, listTopicsDeclaration, readTopicDeclaration, searchChatDeclaration, readChatDeclaration } from "./memory.ts";
+import { saveMemoryDeclaration, searchMemoryDeclaration, searchChatDeclaration, readChatDeclaration } from "./memory.ts";
 
 const skillsDir = fileURLToPath(new URL("./skills/",import.meta.url));
 export const loadedSkills = loadSkills(skillsDir);
-export const toolDeclarations = [saveMemoryDeclaration, searchMemoryDeclaration, listTopicsDeclaration, readTopicDeclaration, searchChatDeclaration, readChatDeclaration];
+export const toolDeclarations = [saveMemoryDeclaration, searchMemoryDeclaration, searchChatDeclaration, readChatDeclaration];
 
 export function capabilityCatalog() {
   return {

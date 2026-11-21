@@ -30,13 +30,15 @@ test("records accepted mobile turns and restores context after restart", async t
   let summaryUnavailable = false;
   let transientCounts = 0;
   let unavailableCounts = 0;
+  let fileNumber=0;
   const fixture = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.url === "/v1/files" || req.url?.startsWith("/v1/vector_stores")) {
       res.setHeader("content-type","application/json");
+      if (req.url.endsWith("/search")) {res.end(JSON.stringify({data:[]}));return;}
       if (req.method==="GET") { res.writeHead(404); res.end("{}"); return; }
-      res.end(JSON.stringify(req.url === "/v1/files" ? {id:"file_fixture"} :
+      res.end(JSON.stringify(req.url === "/v1/files" ? {id:"file_fixture_"+ ++fileNumber} :
         req.url === "/v1/vector_stores" ? {id:"vs_fixture"} : {status:"completed"}));
       return;
     }
@@ -48,7 +50,7 @@ test("records accepted mobile turns and restores context after restart", async t
         const {question} = JSON.parse(payload.input);
         res.writeHead(200,{"content-type":"application/json"});
         const allowed = question === "请记住：只喝温水" || question === "帮我记一下刚才那条";
-        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({decision:allowed?"save":"decline",facts:[{subject:"王子怡",label:"饮水习惯",key:"水温",value:"只喝温水",span:"只喝温水",action:"set"}]})}]}]}));
+        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({decision:allowed?"save":"decline",facts:[{content:"王子怡只喝温水。",quote:"只喝温水"}]})}]}]}));
         return;
       }
       summaries.push(payload.input);
@@ -263,17 +265,17 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.ok(recalledInputs.some(part=>part?.file_id==="file-carry"));
 
   const memoryDb = new DatabaseSync(join(dir,"test.sqlite"));
-  const entries = () => memoryDb.prepare("SELECT conversation,content FROM memory_topics ORDER BY id").all().map(row=>[row.conversation,row.content]);
+  const entries = () => memoryDb.prepare("SELECT conversation,content FROM memories ORDER BY id").all().map(row=>[row.conversation,row.content]);
   const firstPhone = randomUUID(), secondPhone = randomUUID(), explicitId = randomUUID();
   assert.equal((await send("不要记住：只喝温水",randomUUID(),firstPhone)).at(-1).done,true);
   assert.deepEqual(entries(),[]);
   assert.equal((await send("请记住：只喝温水",explicitId,firstPhone)).at(-1).done,true);
   await send("请记住：只喝温水",explicitId,firstPhone);
   await send("请记住：只喝温水",randomUUID(),firstPhone);
-  assert.deepEqual(entries(),[[firstPhone,"王子怡饮水习惯：只喝温水。"]]);
+  assert.deepEqual(entries(),[[firstPhone,"王子怡只喝温水。"]]);
   await send("我只喝温水",randomUUID(),secondPhone);
   assert.equal((await send("帮我记一下刚才那条",randomUUID(),secondPhone)).at(-1).done,true);
-  assert.deepEqual(entries(),[[firstPhone,"王子怡饮水习惯：只喝温水。"],[secondPhone,"王子怡饮水习惯：只喝温水。"]]);
+  assert.deepEqual(entries(),[[firstPhone,"王子怡只喝温水。"],[secondPhone,"王子怡只喝温水。"]]);
   memoryDb.close();
 
   assert.equal((await send("retry count",randomUUID(),randomUUID())).at(-1).done,true);

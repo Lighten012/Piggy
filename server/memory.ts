@@ -1,4 +1,4 @@
-import { organize } from "./memory-planner.ts";
+import { saveFacts } from "./memory-planner.ts";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Journal } from "./journal.ts";
@@ -11,19 +11,9 @@ const offsetParameter = {type:"integer",minimum:0,description:"续读时传入�
 
 export const searchMemoryDeclaration = {
   name:"search_memory",
-  description:"通过本会话的 OpenAI 向量库检索已保存的记忆。query 接收问题原文。返回相关主题、topicId、正文片段和索引状态。需要完整清单用 read_memory_topic。",
+  description:"用自然语言在本会话的 OpenAI 向量库检索已保存的单条事实。最多返回 20 条相关候选，含记忆 ID、正文、证据摘录、来源轮次及相似度。",
   parameters:{type:"object",properties:{query:{type:"string",minLength:1,maxLength:4000,description:"直接表达想找的内容，可使用用户的原问题。"}},
     required:["query"],additionalProperties:false},
-} as const;
-
-const afterParameter={type:"integer",minimum:0,description:"首次传 0，后续传 nextAfter。"} as const;
-export const listTopicsDeclaration = {
-  name:"list_memory_topics",description:"列出当前会话的记忆主题 ID、人物和名称。第一次查某主题先用此工具。complete 为 true 表示目录已读完。",
-  parameters:{type:"object",properties:{after:afterParameter},required:["after"],additionalProperties:false},
-} as const;
-export const readTopicDeclaration = {
-  name:"read_memory_topic",description:"按目录或向量结果给出的 topicId 读取主题成员和来源 turnId。complete 为 true 时该主题已读完。",
-  parameters:{type:"object",properties:{topicId:{type:"integer",minimum:1},after:afterParameter},required:["topicId","after"],additionalProperties:false},
 } as const;
 
 export const searchChatDeclaration = {
@@ -44,14 +34,7 @@ export function memoryReadTools(journal:Journal, index:MemoryIndex, conversation
   return [
     {...searchMemoryDeclaration,label:"查找记忆", async execute(_id,params,signal) {
       const {query} = params as {query:string};
-      return result({...await index.search(conversation,query,signal),migrationPending:!!journal.topics.nextLegacy(conversation)});
-    }},
-    {...listTopicsDeclaration,label:"列出记忆主题",async execute(_id,params) {
-      return result(journal.topics.page(conversation,undefined,(params as {after:number}).after));
-    }},
-    {...readTopicDeclaration,label:"读取完整记忆主题",async execute(_id,params) {
-      const {topicId,after}=params as {topicId?:number;after?:number};
-      return result(journal.topics.page(conversation,topicId,after));
+      return result(await index.search(conversation,query,signal));
     }},
     {...searchChatDeclaration,label:"搜索聊天记录", async execute(_id,params) {
       const {keywords,offset} = params as {keywords:string[];offset?:number};
@@ -68,7 +51,7 @@ export function memoryReadTools(journal:Journal, index:MemoryIndex, conversation
 
 export const saveMemoryDeclaration = {
   name:"save_memory",
-  description:"按用户本轮明确请求，将证据交给服务端 AI 整理为主题成员，合并、更新并记录来源。text 是证据摘录。",
+  description:"按用户本轮明确要求保存或更正记忆。服务端将原话整理为独立事实，分别建立索引，明确改口时更新对应事实。",
   parameters:{type:"object",properties:{text:{type:"string",description:"摘录用户要求记住的完整证据，包含限定词。"}},
     required:["text"],additionalProperties:false},
 } as const;
@@ -93,11 +76,10 @@ export function memoryTool(journal:Journal, index:MemoryIndex, conversation:stri
         }
         if (!previousSource) throw new Error("请逐字引用本条消息或上一轮中用户要求记下的内容。");
       }
-      if (journal.topics.nextLegacy(conversation)) throw new Error("旧记忆正在整理，请稍后重试保存。");
-      const ids=await organize(journal.topics,{conversation,turn:Number(turn),quote:text},question,previousSource,model,key,signal);
+      const ids=await saveFacts(journal.memories,index,conversation,Number(turn),question,text,previousSource,model,key,signal);
       try { for (const id of ids) await index.ensure(id); }
-      catch { return {content:[{type:"text",text:"主题记忆已更新，向量索引仍在处理中，可直接从主题目录读取。"}],details:{}}; }
-      return {content:[{type:"text",text:"记忆已更新。主题编号："+ids.join("、")}],details:{}};
+      catch { return {content:[{type:"text",text:"记忆已保存，仍在建立搜索索引。"}],details:{}}; }
+      return {content:[{type:"text",text:"记忆已保存。记忆编号："+ids.join("、")}],details:{}};
     },
   };
 }
