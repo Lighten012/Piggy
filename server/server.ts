@@ -1,3 +1,4 @@
+import { organize } from "./memory-planner.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -56,7 +57,19 @@ const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
 const memoryIndex = journal.memoryIndex(baseUrl,apiKey ?? "");
 async function syncMemories() {
   let delay = 30000;
-  try { if (await memoryIndex.syncNext()) delay = 1000; }
+  try {
+    const legacy=journal.topics.nextLegacy(undefined,true);
+    if (legacy) {
+      try {
+        await organize(journal.topics,legacy,journal.topics.sourceQuestion(legacy)??legacy.quote,undefined,resolveModel(activeSettings(),baseUrl),apiKey!);
+      } catch {
+        journal.topics.deferLegacy(legacy.conversation);
+        console.warn("Memory migration deferred for legacy row",legacy.legacy);
+      }
+      delay=1000;
+    }
+    if (await memoryIndex.syncNext()) delay=1000;
+  }
   catch { console.warn("Memory indexing deferred; will retry"); }
   finally { setTimeout(syncMemories,delay).unref(); }
 }
@@ -270,7 +283,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     cache = {input,tools,usage};
     return usage;
   }
-  const toolsForTurn = [memoryTool(journal,memoryIndex,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id)];
+  const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id)];
   const agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,files,systemPrompt,count,
     tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
   const stop = () => { controller.abort(); agent.abort(); };

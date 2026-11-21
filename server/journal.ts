@@ -1,3 +1,4 @@
+import { MemoryTopics } from "./memory-topics.ts";
 import { DatabaseSync } from "node:sqlite";
 import { MemoryIndex } from "./memory-index.ts";
 import { queryKeywords } from "./memory-keywords.ts";
@@ -27,6 +28,7 @@ function keywordExcerpt(text:string, terms:string[], size:number) {
 
 export class Journal {
   private db: DatabaseSync;
+  readonly topics:MemoryTopics;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(`
@@ -72,6 +74,7 @@ export class Journal {
       INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
     `);
     MemoryIndex.migrate(this.db);
+    this.topics=new MemoryTopics(this.db);
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
       this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");
@@ -229,36 +232,6 @@ export class Journal {
       throw error;
     }
   }
-  replacementSources(turn:number|bigint, ids:number[]) {
-    const lookup=this.db.prepare(`SELECT m.content FROM memories m JOIN turns t ON m.conversation=t.conversation
-      WHERE t.id=? AND m.id=? AND (m.superseded_by IS NULL OR m.superseded_by IN
-        (SELECT id FROM memories WHERE conversation=t.conversation AND turn_id=t.id))`);
-    return ids.map(id=>{
-      const row=lookup.get(turn,id);
-      if (!row) throw new Error("请重新检索当前会话中的有效记忆。");
-      return String(row.content);
-    });
-  }
-
-  saveMemory(turn:number|bigint, content:string, replaces:number[] = []) {
-    const source = this.db.prepare("SELECT conversation,created FROM turns WHERE id=? AND status='pending'").get(turn);
-    if (!source) throw new Error("当前消息已结束，无法保存记忆。");
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      this.replacementSources(turn,replaces);
-      const saved=this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content) VALUES(?,?,?,?)
-        ON CONFLICT(conversation,content) DO UPDATE SET turn_id=excluded.turn_id,created=excluded.created,superseded_by=NULL
-        RETURNING id`).get(source.conversation,turn,source.created,content)!;
-      const retire=this.db.prepare("UPDATE memories SET superseded_by=? WHERE conversation=? AND id=? AND id<>?");
-      for (const id of replaces) retire.run(saved.id,source.conversation,id,saved.id);
-      this.db.exec("COMMIT");
-      return Number(saved.id);
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
   searchChatHistory(conversation:string, before:number|bigint, keywords:string[], offset=0) {
     const terms = queryKeywords(keywords);
     if (!terms.length) return {matches:[]};

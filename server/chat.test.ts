@@ -44,11 +44,11 @@ test("records accepted mobile turns and restores context after restart", async t
     if (req.url === "/v1/responses" && typeof payload.input === "string") {
       assert.equal(payload.store,false);
       assert.equal(payload.tools,undefined);
-      if (payload.instructions.includes("检查 JSON")) {
-        const {最新用户原话: question} = JSON.parse(payload.input);
+      if (payload.text?.format?.name?.startsWith("memory_")) {
+        const {question} = JSON.parse(payload.input);
         res.writeHead(200,{"content-type":"application/json"});
         const allowed = question === "请记住：只喝温水" || question === "帮我记一下刚才那条";
-        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:allowed?"YES":"NO"}]}]}));
+        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({decision:allowed?"save":"decline",...(payload.text.format.name==="memory_route" ? {groups:[{subject:"王子怡",label:"饮水习惯"}]} : {edits:[{subject:"王子怡",label:"饮水习惯",key:"水温",value:"只喝温水",action:"set"}]})})}]}]}));
         return;
       }
       summaries.push(payload.input);
@@ -62,7 +62,7 @@ test("records accepted mobile turns and restores context after restart", async t
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
     for (const [name,argument] of [["save_memory","text"],["search_memory","query"]]) {
       const tool = payload.tools.find((entry:{name?:string}) => entry.name === name);
-      assert.deepEqual(Object.keys(tool.parameters.properties),name==="save_memory" ? [argument,"replaces"] : [argument]);
+      assert.deepEqual(Object.keys(tool.parameters.properties),[argument]);
       assert.deepEqual(tool.parameters.required,[argument]);
     }
     fileInputs.push(payload.input.flatMap((item: {content?:{file_id?:string}[]}) =>
@@ -263,17 +263,17 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.ok(recalledInputs.some(part=>part?.file_id==="file-carry"));
 
   const memoryDb = new DatabaseSync(join(dir,"test.sqlite"));
-  const entries = () => memoryDb.prepare("SELECT conversation,content FROM memories ORDER BY id").all().map(row=>[row.conversation,row.content]);
+  const entries = () => memoryDb.prepare("SELECT conversation,content FROM memory_topics ORDER BY id").all().map(row=>[row.conversation,row.content]);
   const firstPhone = randomUUID(), secondPhone = randomUUID(), explicitId = randomUUID();
   assert.equal((await send("不要记住：只喝温水",randomUUID(),firstPhone)).at(-1).done,true);
   assert.deepEqual(entries(),[]);
   assert.equal((await send("请记住：只喝温水",explicitId,firstPhone)).at(-1).done,true);
   await send("请记住：只喝温水",explicitId,firstPhone);
   await send("请记住：只喝温水",randomUUID(),firstPhone);
-  assert.deepEqual(entries(),[[firstPhone,"只喝温水"]]);
+  assert.deepEqual(entries(),[[firstPhone,"王子怡饮水习惯：只喝温水。"]]);
   await send("我只喝温水",randomUUID(),secondPhone);
   assert.equal((await send("帮我记一下刚才那条",randomUUID(),secondPhone)).at(-1).done,true);
-  assert.deepEqual(entries(),[[firstPhone,"只喝温水"],[secondPhone,"只喝温水"]]);
+  assert.deepEqual(entries(),[[firstPhone,"王子怡饮水习惯：只喝温水。"],[secondPhone,"王子怡饮水习惯：只喝温水。"]]);
   memoryDb.close();
 
   assert.equal((await send("retry count",randomUUID(),randomUUID())).at(-1).done,true);
