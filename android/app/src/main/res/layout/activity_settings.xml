@@ -1,0 +1,12 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/settings_page" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="#FAF9FC">
+    <Toolbar android:id="@+id/settings_toolbar" android:layout_width="match_parent" android:layout_height="?android:attr/actionBarSize"
+        android:title="设置" android:titleTextColor="#302A36" android:navigationIcon="?android:attr/homeAsUpIndicator"
+        android:navigationContentDescription="返回聊天" />
+    <Button android:id="@+id/background_power" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginLeft="16dp" android:layout_marginRight="16dp" android:layout_marginTop="12dp"
+        android:minHeight="56dp" android:paddingLeft="16dp" android:paddingRight="16dp"
+        android:drawableStart="@drawable/nav_battery" android:drawablePadding="12dp" android:gravity="start|center_vertical"
+        android:text="允许后台运行" android:textSize="16sp" android:textColor="#302A36" android:background="@drawable/settings_row" />
+</LinearLayout>
