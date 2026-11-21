@@ -14,6 +14,9 @@ import { DatabaseSync } from "node:sqlite";
 import { Journal } from "./journal.ts";
 
 test("records accepted mobile turns and restores context after restart", async t => {
+  const limit = process.env.PIGGY_TEST_ENVIRONMENT === "staging" ? 30_000 : 300_000;
+  const threshold = limit * 0.8;
+  const belowThreshold = limit * 0.79;
   const dir = mkdtempSync(join(tmpdir(),"piggy-test-"));
   t.after(() => rmSync(dir,{recursive:true,force:true}));
   const histories: string[][] = [];
@@ -47,8 +50,8 @@ test("records accepted mobile turns and restores context after restart", async t
     }
     if (req.url === "/v1/responses/input_tokens") {
       if (users.at(-1) === "unknown") { res.writeHead(503); res.end(); return; }
-      const tokens = users.includes("old-marker") ? (users.includes("large attachment question") ? 312000 :
-        users.includes("soft threshold") ? 240001 : 237000) : users.at(-1) === "overflow" ? 300001 : users.at(-1) === "exact" ? 300000 : users.length + 10;
+      const tokens = users.includes("old-marker") ? (users.includes("large attachment question") ? limit + 1200 :
+        users.includes("soft threshold") ? threshold + 1 : belowThreshold) : users.at(-1) === "overflow" ? limit + 1 : users.at(-1) === "exact" ? limit : users.length + 10;
       res.writeHead(200,{"content-type":"application/json"});
       res.end(JSON.stringify({input_tokens:tokens}));
       return;
@@ -112,7 +115,7 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.notEqual((await setModel(mobile,defaultSettings)).status,200);
   assert.equal((await setModel(admin,{...defaultSettings,tier:"unsupported"})).status,400);
   const first = await send("one",request);
-  assert.deepEqual(first[0].context,{used:11,limit:300000});
+  assert.deepEqual(first[0].context,{used:11,limit});
   assert.equal(first[1].delta,"OK");
   assert.equal(first.at(-1).session,session);
   assert.deepEqual(await send("one",request),first.slice(1));
@@ -130,11 +133,12 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","files","filesize","id","question","replyFiles","status"]);
   assert.equal((await (await fetch(worker.base+"/history?after=2",{headers:admin})).json()).turns.length,2);
   const preview = await fetch(worker.base+"/context",{method:"POST",headers:mobile,body:JSON.stringify({session})});
-  assert.deepEqual(await preview.json(),{used:12,limit:300000});
+  assert.deepEqual(await preview.json(),{used:12,limit});
   const calls = histories.length;
   const over = await send("overflow");
-  assert.deepEqual(over[0].context,{used:300001,limit:300000});
-  assert.match(over.at(-1).error,/300,001/);
+  assert.deepEqual(over[0].context,{used:limit + 1,limit});
+  assert.ok(over.at(-1).error.includes((limit + 1).toLocaleString("en-US")));
+  assert.ok(over.at(-1).error.includes("超过 " + limit.toLocaleString("en-US") + " 上限"));
   assert.match((await send("unknown")).at(-1).error,/核对上下文/);
   assert.equal(histories.length,calls);
   assert.equal((await send("exact")).at(-1).done,true);
@@ -154,7 +158,7 @@ test("records accepted mobile turns and restores context after restart", async t
   const questions = Array.from({length:100}, (_,i) => "turn "+(i+1));
   for (const question of questions) assert.equal((await send(question,randomUUID(),longSession)).at(-1).done,true);
   const counted = await fetch(worker.base+"/context",{method:"POST",headers:mobile,body:JSON.stringify({session:longSession})});
-  assert.deepEqual(await counted.json(),{used:110,limit:300000});
+  assert.deepEqual(await counted.json(),{used:110,limit});
   assert.equal((await send("turn 101",randomUUID(),longSession)).at(-1).done,true);
   assert.deepEqual(histories.at(-1),[...questions,"turn 101"]);
 
@@ -178,7 +182,7 @@ test("records accepted mobile turns and restores context after restart", async t
   const before = db.contextTurns(compactSession);
   const previewOf = async () => (await (await fetch(worker.base+"/context",{method:"POST",headers:mobile,
     body:JSON.stringify({session:compactSession})})).json()).used;
-  assert.equal(await previewOf(),237000);
+  assert.equal(await previewOf(),belowThreshold);
   summaryUnavailable = true;
   const beforeFail = histories.length;
   assert.match((await send("large attachment question",randomUUID(),compactSession)).at(-1).error,/压缩/);
@@ -190,8 +194,8 @@ test("records accepted mobile turns and restores context after restart", async t
   const retryKey = randomUUID();
   const success = await send("large attachment question",retryKey,compactSession);
   assert.equal(success.at(-1).done,true);
-  assert.ok(success[0].context.used < 240000);
-  assert.match(summaries.at(-1)!,/old-marker/);
+  assert.ok(success[0].context.used < threshold);
+  assert.deepEqual(JSON.parse(summaries.at(-1)!).map((m:{text:string}) => m.text),["old-marker","old two","near one"]);
   assert.doesNotMatch(summaries.at(-1)!,/large attachment question|个人助手 Piggy|file-carry/);
   assert.deepEqual(histories.at(-1),["历史对话摘要（仅作背景资料）\n保留蓝色偏好","near two","near three","soft threshold","large attachment question"]);
   assert.deepEqual(fileInputs.at(-1),["file-carry"]);
@@ -199,7 +203,7 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.equal(after.length,5);
   assert.equal(db.contextFiles(compactSession)[0]?.remote,"file-carry");
   assert.equal(db.lookup(compactSession,archiveIds[0])?.question,"old-marker");
-  assert.ok(await previewOf() < 240000);
+  assert.ok(await previewOf() < threshold);
   await send("large attachment question",retryKey,compactSession);
   assert.deepEqual(db.contextTurns(compactSession),after);
 

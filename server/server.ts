@@ -132,7 +132,7 @@ function newAgent(model: Model<"openai-responses">, settings: ModelSettings, out
         }
         measured(usage);
         if (usage.used > usage.limit) {
-          const message = `本次输入共 ${usage.used.toLocaleString("en-US")} tokens，超过 300,000 上限，请缩短消息或减少附件。`;
+          const message = `本次输入共 ${usage.used.toLocaleString("en-US")} tokens，超过 ${usage.limit.toLocaleString("en-US")} 上限，请缩短消息或减少附件。`;
           rejectGeneration(message);
           throw new Error(message);
         }

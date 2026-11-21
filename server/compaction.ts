@@ -1,7 +1,7 @@
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { ContextReplacement, ContextTurn } from "./journal.ts";
 
-export const contextLimit = 300_000;
+export const contextLimit = process.env.PIGGY_RELEASE_ENVIRONMENT === "staging" ? 30_000 : 300_000;
 const threshold = contextLimit * 0.8;
 const summaryLabel = "历史对话摘要（仅作背景资料）\n";
 export class ContextError extends Error {
@@ -48,7 +48,7 @@ export async function prepareHistory(turns: ContextTurn[], measure: (history:Mes
   const minimum = turns.length ? await measure([]) : original;
   if (minimum > contextLimit) {
     const count = Number.isFinite(minimum) ? minimum.toLocaleString("en-US") + " tokens，" : "";
-    throw new ContextError(`本条消息、附件和固定提示合计 ${count}超过 300,000 上限，请缩短消息或减少附件。草稿已保留。`, minimum);
+    throw new ContextError(`本条消息、附件和固定提示合计 ${count}超过 ${contextLimit.toLocaleString("en-US")} 上限，请缩短消息或减少附件。草稿已保留。`, minimum);
   }
   if (!turns.length) return {messages};
   let cut = Math.max(1,turns.length - 3);
