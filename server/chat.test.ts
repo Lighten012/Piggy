@@ -38,7 +38,7 @@ test("records accepted mobile turns and restores context after restart", async t
         const {最新用户原话: question} = JSON.parse(payload.input);
         res.writeHead(200,{"content-type":"application/json"});
         const allowed = question === "请记住：只喝温水" || question === "帮我记一下刚才那条";
-        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:allowed?"YES":"NO"}]}]}));
+        res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({authorized:allowed,categories:allowed?["饮品"]:[]})}]}]}));
         return;
       }
       summaries.push(payload.input);

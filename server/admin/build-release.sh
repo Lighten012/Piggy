@@ -17,10 +17,11 @@ mkdir -p "$out/web"
 cp -R dist "$out/web/"
 cd "$admin/.."
 npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-"$admin/web/node_modules/.bin/esbuild" server.ts --bundle --platform=node --target=node24 --format=esm \
+"$admin/web/node_modules/.bin/esbuild" pi=server.ts backfill-memory-categories=backfill-memory-categories.ts --bundle --platform=node --target=node24 --format=esm \
   "--define:process.env.PIGGY_RELEASE_ENVIRONMENT=\"$environment\"" \
   '--banner:js=import { createRequire as __createRequire } from "node:module";const require=__createRequire(import.meta.url);' \
-  --outfile="$out/pi.mjs"
+  --out-extension:.js=.mjs --outdir="$out"
+node --experimental-strip-types --input-type=module -e 'import {loadSkills} from "./skill-loader.ts"; loadSkills("skills")'
 mkdir -p "$out/skills"
 cp -R skills/. "$out/skills/"
 cd "$admin"

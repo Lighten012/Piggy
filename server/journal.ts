@@ -88,14 +88,24 @@ export class Journal {
     try {
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name='keywords'").get())
         this.db.exec("ALTER TABLE memories ADD COLUMN keywords TEXT");
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name='categories'").get()) {
+        this.db.exec(`
+          ALTER TABLE memories ADD COLUMN categories TEXT;
+          DROP TRIGGER IF EXISTS memory_terms_insert;
+          DROP TRIGGER IF EXISTS memory_terms_update;
+          DROP TRIGGER IF EXISTS memory_terms_delete;
+          DROP TABLE IF EXISTS memory_terms;
+          CREATE VIRTUAL TABLE memory_terms USING fts5(keywords,categories);
+          INSERT INTO memory_terms(rowid,keywords,categories) SELECT id,keywords,categories FROM memories;
+        `);
+      }
       this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS memory_terms USING fts5(keywords);
-        CREATE TRIGGER IF NOT EXISTS memory_terms_insert AFTER INSERT ON memories WHEN new.keywords IS NOT NULL BEGIN
-          INSERT INTO memory_terms(rowid,keywords) VALUES(new.id,new.keywords);
+        CREATE TRIGGER IF NOT EXISTS memory_terms_insert AFTER INSERT ON memories BEGIN
+          INSERT INTO memory_terms(rowid,keywords,categories) VALUES(new.id,new.keywords,new.categories);
         END;
-        CREATE TRIGGER IF NOT EXISTS memory_terms_update AFTER UPDATE OF keywords ON memories BEGIN
+        CREATE TRIGGER IF NOT EXISTS memory_terms_update AFTER UPDATE OF keywords,categories ON memories BEGIN
           DELETE FROM memory_terms WHERE rowid=old.id;
-          INSERT INTO memory_terms(rowid,keywords) VALUES(new.id,new.keywords);
+          INSERT INTO memory_terms(rowid,keywords,categories) VALUES(new.id,new.keywords,new.categories);
         END;
         CREATE TRIGGER IF NOT EXISTS memory_terms_delete AFTER DELETE ON memories BEGIN
           DELETE FROM memory_terms WHERE rowid=old.id;
@@ -259,11 +269,11 @@ export class Journal {
       throw error;
     }
   }
-  saveMemory(turn:number|bigint, content:string, hints:readonly string[] = []) {
+  saveMemory(turn:number|bigint, content:string, hints:readonly string[] = [], categories:readonly string[] = []) {
     const source = this.db.prepare("SELECT conversation FROM turns WHERE id=? AND status='pending'").get(turn);
     if (!source) throw new Error("当前消息已结束，无法保存记忆。");
-    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content,keywords) VALUES(?,?,?,?,?)
-      ON CONFLICT(conversation,content) DO NOTHING`).run(source.conversation,turn,Date.now(),content,JSON.stringify(memoryKeywords(content,hints)));
+    this.db.prepare(`INSERT INTO memories(conversation,turn_id,created,content,keywords,categories) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(conversation,content) DO UPDATE SET categories=excluded.categories WHERE memories.categories IS NULL`).run(source.conversation,turn,Date.now(),content,JSON.stringify(memoryKeywords(content,hints)),JSON.stringify(categories));
   }
 
   searchMemory(conversation:string, keywords:string[], offset=0) {
@@ -272,12 +282,12 @@ export class Journal {
     // Quote each FTS phrase literally, including embedded double quotes.
     const match = terms.map(term => '"' + term.replaceAll('"','""') + '"').join(" OR ");
     const rows = this.db.prepare(`
-      SELECT m.id,m.created,m.content FROM memory_terms JOIN memories m ON m.id=memory_terms.rowid
+      SELECT m.id,m.created,m.content,m.categories FROM memory_terms JOIN memories m ON m.id=memory_terms.rowid
       WHERE memory_terms MATCH ? AND m.conversation=?
-      ORDER BY memory_terms.rank,m.created DESC,m.id DESC LIMIT 9 OFFSET ?
+      ORDER BY bm25(memory_terms,2.0,1.0),m.created DESC,m.id DESC LIMIT 9 OFFSET ?
     `).all(match,conversation,offset);
     const candidates = rows.slice(0,8).map(row => ({
-      memoryId:row.id,created:row.created,text:keywordExcerpt(String(row.content),terms,1200),
+      memoryId:row.id,created:row.created,categories:JSON.parse(String(row.categories ?? "[]")),text:keywordExcerpt(String(row.content),terms,1200),
     }));
     return {candidates,nextOffset:rows.length > 8 ? offset+8 : undefined};
   }

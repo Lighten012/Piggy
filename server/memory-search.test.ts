@@ -66,3 +66,29 @@ test("later pages are reachable for tied keyword matches", () => {
   assert.equal(new Set([...first.candidates,...rest.candidates].map(row=>row.memoryId)).size,10);
   assert.equal(journal.searchChatHistory("a",11,["咖啡"],8).matches.length,2);
 });
+
+test("category-only and exact recall preserve evidence, source, scope and pagination", () => {
+  const db = new Journal(":memory:");
+  function save(session:string,text:string,tags:string[]) {
+    const turn = db.begin(session,text,"记住："+text);
+    db.saveMemory(turn,text,[],tags);
+    db.complete(turn,"好",[]);
+    return Number(turn);
+  }
+  const strawberry = save("a","我喜欢吃草莓",["水果","食物"]);
+  save("a","我不喜欢芒果",["水果","食物"]);
+  save("a","妈妈喜欢桃子",["水果","食物"]);
+  save("a","我只喜欢草莓味蛋糕",["蛋糕","甜点"]);
+  save("a","我的苹果手机坏了",["手机","电子产品"]);
+  save("b","我喜欢吃香蕉",["水果"]);
+  const entries = db.searchMemory("a",["水果"]).candidates;
+  assert.deepEqual(entries.map(e=>e.text).sort(),["妈妈喜欢桃子","我不喜欢芒果","我喜欢吃草莓"].sort());
+  const hit = entries.find(e=>e.text==="我喜欢吃草莓")!;
+  assert.deepEqual(hit.categories,["水果","食物"]);
+  assert.equal(db.readChatContext("a",99,"memory",Number(hit.memoryId)).anchorTurnId,strawberry);
+  assert.ok(db.searchMemory("a",["草莓"]).candidates.some(e=>e.memoryId===hit.memoryId));
+  for (let i=0;i<9;i++) save("a","活动 "+i,["运动"]);
+  const first = db.searchMemory("a",["运动"]);
+  assert.equal(first.candidates.length,8);
+  assert.equal(db.searchMemory("a",["运动"],first.nextOffset).candidates.length,1);
+});

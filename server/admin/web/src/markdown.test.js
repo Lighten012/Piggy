@@ -26,3 +26,10 @@ test("CJK prose can touch a quoted strong phrase without adding spaces", () => {
   assert.ok(!renderMarkdown("一对\\*\\*“原样”\\*\\*文字").includes("<strong>"));
   assert.ok(!renderMarkdown("一对**“尚未结束").includes("<strong>"));
 });
+
+test("Skill documents preserve Markdown paragraphs, structure and fenced examples", async () => {
+  const {renderSkillMarkdown} = await import("./markdown.js");
+  const html = renderSkillMarkdown("## 查找\n\n第一行\n第二行\n\n> **提示**\n\n1. `search_memory`\n   - 原文\n\n|类|例|\n|---|---|\n|水果|草莓|\n\n```md\n**原样**\n```\n\n<script>alert(1)</script>");
+  for (const fragment of ["<h2>查找</h2>","第一行\n第二行","<blockquote>","<strong>提示</strong>","<ol>","<ul>","<td>草莓</td>","<code>search_memory</code>","**原样**","&lt;script&gt;"]) assert.ok(html.includes(fragment),fragment);
+  assert.ok(!html.includes("<br"));
+});

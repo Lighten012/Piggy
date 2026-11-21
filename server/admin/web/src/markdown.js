@@ -23,3 +23,8 @@ markdown.validateLink = href => /^https?:\/\//i.test(href);
 markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index].content);
 
 export const renderMarkdown = source => markdown.render(source);
+
+// Skills are repository-authored documents. Preserve Markdown soft breaks and
+// standard emphasis rules independently of the chat transcript's CJK extensions.
+const skillMarkdown = new MarkdownIt("commonmark", { html:false }).enable(["table","strikethrough"]);
+export const renderSkillMarkdown = source => skillMarkdown.render(source);
