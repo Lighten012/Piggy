@@ -2,7 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
-import { ReplyFiles, fileTools, replyText } from "./reply-files.ts";
+import { ReplyFiles, replyText } from "./reply-files.ts";
+import { responseTools } from "./hosted-tools.ts";
+import { WebSearch } from "./web-search.ts";
 import { Retention } from "./retention.ts";
 import { Journal, type Attachment } from "./journal.ts";
 import { readFileSync } from "node:fs";
@@ -66,7 +68,7 @@ const model: Model<"openai-responses"> = {
 const apiKey = fixturePort ? "local-fixture-only" : process.env.PI_API_KEY;
 const thinkingLevel = model.id === sol.id ? "high" : "off";
 const contextLimit = 300_000;
-const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。用户要求图片或可下载的文件时，调用对应工具实际生成。使用代码解释器生成的文件请在最终答复中链接到 sandbox:/mnt/data/ 下的成品。";
+const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。遇到新闻、需要核实的近期变化或用户明确要求联网时，使用网页搜索核实，按来源的发布日期和事件日期回答，提供可点击的行内出处。无法查证时如实说明。用户要求图片或可下载的文件时，调用对应工具实际生成。使用代码解释器生成的文件请在最终答复中链接到 sandbox:/mnt/data/ 下的成品。";
 function addFiles(input: unknown[], files: Attachment[]) {
   if (!files.length) return;
   const user = input.findLast((item): item is {role:"user"; content:unknown} =>
@@ -95,10 +97,11 @@ function toolFileIds(conversation: string, files: Attachment[]) {
 }
 function promptForFiles(stored: number, available: number) {
   const prompt = [persona, ...loadedSkills.map(skill => skill.instructions)].join("\n\n");
-  return prompt + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
+  const today = new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai"}).format(Date.now());
+  return prompt + "\n当前北京时间日期：" + today + "。" + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
 }
 type ContextUsage = Awaited<ReturnType<typeof countInput>>;
-function newAgent(outputs: ReplyFiles, availableIds: string[], files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["contextMessages"]>,
+function newAgent(outputs: ReplyFiles, search: WebSearch, availableIds: string[], files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["contextMessages"]>,
     measured: (usage: ContextUsage) => void,
     rejectGeneration: (message: string) => void) {
   return new Agent({
@@ -106,11 +109,14 @@ function newAgent(outputs: ReplyFiles, availableIds: string[], files: Attachment
     getApiKey: () => apiKey,
     streamFn: (_model, context, options) => streamResponses(model, context, {
       ...options, maxTokens: thinkingLevel === "high" ? 16384 : 2048, maxRetries: 0,
-      onProviderStreamEvent: event => outputs.observe(event,options?.signal),
+      onProviderStreamEvent: async event => {
+        search.observe(event);
+        await outputs.observe(event,options?.signal);
+      },
       async onPayload(payload) {
         const body = payload as {tools?:unknown[]; input: {role?:string; content?:unknown}[]};
         const input = body.input;
-        const tools = body.tools = [...(body.tools ?? []), ...fileTools(availableIds)];
+        const tools = body.tools = [...(body.tools ?? []), ...responseTools(availableIds)];
         addFiles(input, files);
         let usage: ContextUsage;
         try { usage = await countInput(input, tools, options?.signal); }
@@ -166,7 +172,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       }), new Set(["openai"]));
       addFiles(input,files);
       const tools = agentTools.length ? convertResponsesTools(agentTools.map(toToolDeclaration), {supportsStrictMode:true}) : undefined;
-      const usage = await countInput(input, [...(tools ?? []), ...fileTools(toolFileIds(data.session,files))]);
+      const usage = await countInput(input, [...(tools ?? []), ...responseTools(toolFileIds(data.session,files))]);
       res.writeHead(200,{"Content-Type":"application/json"});
       res.end(JSON.stringify(usage));
     } catch { reject(res,503,"上下文用量暂时无法读取"); }
@@ -208,7 +214,8 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   let failure = "生成失败，请稍后重试";
   let preflightFailure = false;
   const outputs = new ReplyFiles(retention,model.baseUrl,apiKey);
-  const agent = newAgent(outputs,toolFileIds(conversation,files),files,promptForFiles(stored.length,files.length),messages,
+  const search = new WebSearch();
+  const agent = newAgent(outputs,search,toolFileIds(conversation,files),files,promptForFiles(stored.length,files.length),messages,
     context => emit({context}), message => { failure = message; preflightFailure = true; });
   const initialMessageCount = agent.state.messages.length;
   const stop = () => agent.abort();
@@ -237,6 +244,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       console.warn("Model call failed", code || (reason.includes("Connection") ? "connection" : "generation"));
       throw new Error("Generation failed");
     }
+    for (const part of last.content) if (part.type === "text") part.text = search.render(part.text);
     const text = last.content.filter(part => part.type === "text").map(part => part.text).join("");
     const answer = replyText(text,outputs.files);
     if (!answer.trim()) throw new Error("Model returned no visible reply");
@@ -247,7 +255,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files);
     committed = true;
     emit({ done:true, session:conversation, answer, replyFiles:journal.replyFiles(id) });
-    console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel, status:"ok",
+    console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel, status:"ok", webSearchUsed:search.used,
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
   } catch {

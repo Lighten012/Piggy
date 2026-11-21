@@ -1,4 +1,4 @@
-import { hostedTools } from "./reply-files.ts";
+import { hostedTools } from "./hosted-tools.ts";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { toToolDeclaration } from "@earendil-works/pi-ai";
 

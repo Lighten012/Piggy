@@ -11,17 +11,6 @@ export interface ReplyFile {
 type Citation = {type:string; filename?:string; file_id?:string; container_id?:string};
 type Output = {type:string; id?:string; result?:string; content?:{annotations?:Citation[]}[]};
 
-export const hostedTools = [
-  {type:"code_interpreter", description:"生成和处理 Excel、PowerPoint 等文件。"},
-  {type:"image_generation", description:"生成图片并作为回复附件发送。"},
-];
-export function fileTools(ids: string[]) {
-  return [
-    {type:"code_interpreter",container:{type:"auto",...(ids.length ? {file_ids:[...new Set(ids)]} : {})}},
-    {type:"image_generation",output_format:"jpeg",quality:"medium"},
-  ];
-}
-
 // Only consume provider-issued output items and citations, never URLs from assistant prose.
 export class ReplyFiles {
   readonly files: ReplyFile[] = [];

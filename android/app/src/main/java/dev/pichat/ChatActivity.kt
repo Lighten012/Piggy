@@ -577,6 +577,7 @@ class ChatActivity : Activity() {
         }
         val view = text("", 16f, ink).apply {
             setTextIsSelectable(true)
+            movementMethod = android.text.method.LinkMovementMethod.getInstance()
             setLinkTextColor(plum)
             setPadding(dp(17), dp(13), dp(17), dp(13))
             setLineSpacing(dp(2).toFloat(), 1f)

@@ -22,6 +22,7 @@ test("records accepted mobile turns and restores context after restart", async t
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
     assert.equal(payload.model, "gpt-6.2-sol");
+    assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
     fileInputs.push(payload.input.flatMap((item: {content?:{file_id?:string}[]}) =>
       Array.isArray(item.content) ? item.content.flatMap(part => part.file_id ? [part.file_id] : []) : []));
     const users = payload.input.filter((item: {role?:string}) => item.role === "user")
@@ -49,11 +50,14 @@ test("records accepted mobile turns and restores context after restart", async t
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
+    const searching = users.at(-1) === "search the web";
+    const text = searching ? "🐷今天有新闻。下段" : "OK";
+    const annotations = searching ? [{type:"url_citation",url:"https://example.org/news",start_index:1,end_index:7}] : [];
     const item = {type:"message",id:"msg_"+histories.length,role:"assistant",status:"completed",
-      content:[{type:"output_text",text:"OK",annotations:[]}]};
+      content:[{type:"output_text",text,annotations}]};
     for (const event of [
       {type:"response.output_item.added",output_index:0,item:{...item,content:[]}},
-      {type:"response.output_text.delta",output_index:0,delta:"OK"},
+      {type:"response.output_text.delta",output_index:0,delta:text},
       {type:"response.output_item.done",output_index:0,item},
       {type:"response.completed",response:{id:"resp_fixture",status:"completed",output:[item]}},
     ]) res.write("data: " + JSON.stringify(event) + "\n\n");
@@ -136,6 +140,13 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.deepEqual(await counted.json(),{used:110,limit:300000});
   assert.equal((await send("turn 101",randomUUID(),longSession)).at(-1).done,true);
   assert.deepEqual(histories.at(-1),[...questions,"turn 101"]);
+
+  const searchId = randomUUID(), phone = randomUUID();
+  const cited = "🐷今天有新闻。 [来源 · example.org](https://example.org/news)下段";
+  assert.equal((await send("search the web",searchId,phone)).at(-1).answer,cited);
+  assert.equal((await send("search the web",searchId,phone)).at(-1).answer,cited);
+  assert.equal(db.page(null,null).at(-1)?.answer,cited);
+  assert.ok(JSON.stringify(db.contextMessages(phone)).includes(cited));
 
 });
 
