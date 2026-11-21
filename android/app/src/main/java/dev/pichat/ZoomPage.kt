@@ -10,8 +10,18 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 
-internal class ZoomPage(context: Context, private val bitmap: Bitmap, page: Int) : View(context) {
+internal class ZoomPage(
+    context: Context,
+    private val bitmap: Bitmap,
+    page: Int,
+    private val renderDetail: (RectF, Int, Int, (Bitmap) -> Unit) -> Unit,
+) : View(context) {
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private var detail: Bitmap? = null
+    private var detailArea: RectF? = null
+    private var requested: RectF? = null
+    private var rendering = false
+    private var task: Runnable? = null
     private var zoom = 1f
     private var dx = 0f
     private var dy = 0f
@@ -82,5 +92,45 @@ internal class ZoomPage(context: Context, private val bitmap: Bitmap, page: Int)
         val x = (width - w) / 2 + dx
         val y = (height - h) / 2 + dy
         canvas.drawBitmap(bitmap, null, RectF(x, y, x + w, y + h), paint)
+        if (zoom <= 1.5f) return
+        val area =
+            RectF(
+                maxOf(0f, -x / w),
+                maxOf(0f, -y / h),
+                minOf(1f, (width - x) / w),
+                minOf(1f, (height - y) / h),
+            )
+        detailArea?.let { r ->
+            detail?.let {
+                canvas.drawBitmap(
+                    it,
+                    null,
+                    RectF(x + r.left * w, y + r.top * h, x + r.right * w, y + r.bottom * h),
+                    paint,
+                )
+            }
+        }
+        if (rendering || area == requested) return
+        requested = area
+        task?.let { removeCallbacks(it) }
+        task =
+            Runnable {
+                    if (!isAttachedToWindow || zoom <= 1.5f) {
+                        requested = null
+                        return@Runnable
+                    }
+                    rendering = true
+                    renderDetail(
+                        area,
+                        (area.width() * w).toInt().coerceAtLeast(1),
+                        (area.height() * h).toInt().coerceAtLeast(1),
+                    ) { result ->
+                        rendering = false
+                        detailArea = area
+                        detail = result
+                        invalidate()
+                    }
+                }
+                .also { postDelayed(it, 100) }
     }
 }

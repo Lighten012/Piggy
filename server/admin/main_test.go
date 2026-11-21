@@ -38,7 +38,6 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 		{"HEAD", "/capabilities", true, 200, "admin"}, {"POST", "/capabilities", true, 405, ""},
 		{"GET", "/mobile/capabilities", false, 401, ""},
 		{"POST", mobileContext, false, 200, "mobile"}, {"GET", mobileContext, false, 405, ""},
-		{"GET", previewPath, false, 405, ""},
 		{"POST", mobileFiles, false, 200, "mobile"}, {"GET", mobileFiles, false, 405, ""},
 		{"POST", mobileChat, false, 200, "mobile"}, {"GET", mobileChat, false, 405, ""},
 		{"GET", "/history/files/test", false, 401, ""}, {"HEAD", "/history/files/test", true, 200, "admin"},
@@ -59,14 +58,12 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 		}
 	}
 	for _, code := range []string{"", "5", "7"} {
-		for _, path := range []string{mobileChat, previewPath} {
-			r := httptest.NewRequest("POST", path, nil)
-			r.Header.Set("X-Piggy-Version-Code", code)
-			w := httptest.NewRecorder()
-			h.ServeHTTP(w, r)
-			if w.Code != 426 {
-				t.Fatalf("client %q got %d", code, w.Code)
-			}
+		r := httptest.NewRequest("POST", mobileChat, nil)
+		r.Header.Set("X-Piggy-Version-Code", code)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != 426 {
+			t.Fatalf("client %q got %d", code, w.Code)
 		}
 	}
 

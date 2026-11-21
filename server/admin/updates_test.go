@@ -70,3 +70,51 @@ func TestAndroidPublishingAndDownloads(t *testing.T) {
 		t.Fatal(latest, err)
 	}
 }
+
+func TestCPUPackageSelection(t *testing.T) {
+	dir, bundle := t.TempDir(), t.TempDir()
+	create := func(path string, code int, payload string) {
+		t.Helper()
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+		m := androidRelease{"dev.pichat", code, "0.12.0", 24, int64(len(payload)), fmt.Sprintf("%x", sha256.Sum256([]byte(payload))), strings.Repeat("a", 64)}
+		b, _ := json.Marshal(m)
+		if err := os.WriteFile(filepath.Join(path, "latest.json"), b, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "Piggy.apk"), []byte(payload), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create(bundle, 22, "arm64")
+	for _, abi := range alternateABIs {
+		create(filepath.Join(bundle, "variants", abi), 22, abi)
+	}
+	if err := publishAndroid(dir, bundle); err != nil {
+		t.Fatal(err)
+	}
+	for _, abi := range alternateABIs {
+		get := func(path string) *httptest.ResponseRecorder {
+			w := httptest.NewRecorder()
+			androidUpdates(dir, w, httptest.NewRequest("GET", path, nil))
+			return w
+		}
+		var m androidRelease
+		if err := json.Unmarshal(get(updatePrefix+"latest.json?abi="+abi).Body.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		r := get(updatePrefix + "Piggy.apk?abi=" + abi)
+		if m.Code != 22 || r.Code != 307 || get(r.Header().Get("Location")).Body.String() != abi {
+			t.Fatal(abi)
+		}
+	}
+	create(bundle, 23, "next")
+	if err := publishAndroid(dir, bundle); err == nil {
+		t.Fatal("published mixed versions")
+	}
+	old, err := readRelease(dir)
+	if err != nil || old.Code != 22 {
+		t.Fatal("changed active release")
+	}
+}

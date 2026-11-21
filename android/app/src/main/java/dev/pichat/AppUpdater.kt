@@ -99,7 +99,8 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
 
     private fun findUpdate(): Pair<String, File>? {
         val root = PiggyServer.ORIGIN + "/updates/android/"
-        val manifest = read(URL(root + "latest.json")) { input ->
+        val abi = OfficeRuntime.deviceAbi
+        val manifest = read(URL(root + "latest.json?abi=$abi")) { input ->
             val out = ByteArrayOutputStream()
             val buf = ByteArray(2048)
             while (true) {
@@ -113,7 +114,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
         check(manifest.getString("packageName") == activity.packageName) { "版本信息属于其他应用" }
         val code = manifest.getLong("versionCode")
         check(code >= version(installed)) { "服务器尚未发布此版本，请稍后重试" }
-        if (code == version(installed)) {
+        if (code == version(installed) && OfficeRuntime.bundledAbi(activity) == abi) {
             cache.listFiles()?.filter { it.extension == "apk" }?.forEach { it.delete() }
             return null
         }
@@ -130,7 +131,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
         if (!file.isFile) {
             val temp = File.createTempFile("download-", ".apk", cache)
             try {
-                read(URL(root + "$digest.apk")) { input ->
+                read(URL(root + "$digest.apk?abi=$abi&v=$code")) { input ->
                     temp.outputStream().use { out ->
                         var total = 0L
                         val buf = ByteArray(32768)

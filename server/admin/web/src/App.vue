@@ -98,11 +98,7 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
                :key="index" class="attachment">
             <span class="file-note">{{ file.name }} · {{ Math.ceil(file.size / 1024) }} KB</span>
             <template v-if="file.key && file.until > now">
-              <a v-if="file.preview?.startsWith('image/')" :href="fileUrl(file)" target="_blank" rel="noopener">
-                <img class="attachment-photo" :src="fileUrl(file)" :alt="file.name" loading="lazy" decoding="async">
-              </a>
               <div class="file-actions">
-                <a v-if="file.preview" :href="fileUrl(file)" target="_blank" rel="noopener">查看</a>
                 <a :href="fileUrl(file) + '?download=1'" :download="file.name">下载</a>
               </div>
             </template>
@@ -113,11 +109,7 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
           <div v-for="file in row.replyFiles" :key="file.key" class="reply-file">
             <span class="file-note">{{ file.name }} · {{ Math.ceil(file.size / 1024) }} KB</span>
             <template v-if="file.until > now">
-              <a v-if="file.preview?.startsWith('image/')" :href="fileUrl(file)" target="_blank" rel="noopener">
-                <img class="attachment-photo" :src="fileUrl(file)" :alt="file.name" loading="lazy">
-              </a>
               <div class="file-actions">
-                <a v-if="file.preview" :href="fileUrl(file)" target="_blank" rel="noopener">查看</a>
                 <a :href="fileUrl(file) + '?download=1'" :download="file.name">下载</a>
               </div>
             </template>
@@ -138,7 +130,6 @@ nav a:focus-visible {outline:2px solid var(--berry);outline-offset:2px}
 @media(max-width:440px) { nav a {padding-inline:8px} }
 .piggy-avatar { object-fit: contain; border-radius: 50%; }
 .attachment { display: grid; justify-items: end; gap: 4px; max-width: 100%; }
-.attachment-photo { display: block; max-width: min(180px, 60vw); max-height: 140px; border-radius: 10px; }
 .reply-file {display:grid;gap:5px;padding:10px 14px;border:1px solid var(--line);border-radius:14px;background:white;overflow-wrap:anywhere}
 .file-actions { display: flex; gap: 16px; }
 .file-actions a { color: #754253; font-size: .85rem; padding-block: 3px; }

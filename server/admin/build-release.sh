@@ -16,5 +16,5 @@ npm ci --omit=dev --ignore-scripts --no-audit --no-fund
   --outfile="$out/pi.mjs"
 cd "$admin"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$out/piggy-admin" .
-cp piggy-admin.service piggy-pi.service piggy-preview.service "$out/"
+cp piggy-admin.service piggy-pi.service "$out/"
 git rev-parse HEAD > "$out/REVISION"

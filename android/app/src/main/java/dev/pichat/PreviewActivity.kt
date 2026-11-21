@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
@@ -27,8 +28,6 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.HttpURLConnection
-import java.security.MessageDigest
 import java.util.concurrent.Executors
 import kotlin.math.sqrt
 import org.json.JSONObject
@@ -53,11 +52,12 @@ class PreviewActivity : Activity() {
     private var count = 0
     private var isMarkdown = false
     @Volatile private var closed = false
-    @Volatile private var conversion: HttpURLConnection? = null
     private val paper = Color.rgb(250, 249, 252)
     private val ink = Color.rgb(48, 42, 54)
     private val accent = Color.rgb(105, 77, 131)
-    private val week = 7L * 86400000
+    @Volatile private var office: OfficeReader? = null
+    private var officeKind = -1
+    private var sheetNames: Array<String>? = null
     private val limit = 32L * 1024 * 1024
     private val origin = "https://preview.piggy.invalid"
     private val name
@@ -244,33 +244,17 @@ class PreviewActivity : Activity() {
                     ext in setOf("png", "jpg", "jpeg", "gif", "bmp", "webp", "avif") ->
                     onScreen { showBrowser("image", mime) }
                 ext == "pdf" || mime == "application/pdf" -> openPdf(source)
+                ext in setOf("csv", "tsv") -> onScreen { showBrowser("sheet", ext) }
                 ext in
                     setOf(
-                        "csv",
-                        "tsv",
                         "xls",
                         "xlsx",
                         "xlsm",
                         "xlsb",
-                        "ods",
                         "xlt",
                         "xltx",
+                        "ods",
                         "numbers",
-                    ) -> {
-                    if (ext in setOf("xlsx", "xlsm", "xlsb", "ods", "xltx", "numbers")) {
-                        java.util.zip.ZipFile(source).use { archive ->
-                            var expanded = 0L
-                            for (entry in archive.entries()) {
-                                require(entry.size in 0..(64L shl 20)) { "工作簿过大，无法在手机上预览" }
-                                expanded += entry.size
-                                require(expanded <= (64L shl 20)) { "工作簿过大，无法在手机上预览" }
-                            }
-                        }
-                    }
-                    onScreen { showBrowser("sheet", ext) }
-                }
-                ext in
-                    setOf(
                         "doc",
                         "docx",
                         "dot",
@@ -284,8 +268,8 @@ class PreviewActivity : Activity() {
                         "pages",
                         "key",
                     ) -> {
-                    onScreen { status("正在准备文档页面…") }
-                    openPdf(convert(source, ext))
+                    onScreen { status("正在读取原文档…") }
+                    openOffice(source, ext)
                 }
                 ext in setOf("gdoc", "gsheet", "gslides") ->
                     onScreen { status("这是在线文档的快捷方式。要查看正文，请将文档导出为 Word、Excel、PPT 或 PDF。") }
@@ -314,52 +298,110 @@ class PreviewActivity : Activity() {
         }
     }
 
-    private fun convert(source: File, ext: String): File {
-        val cache = File(cacheDir, "office-previews").apply { mkdirs() }
-        val now = System.currentTimeMillis()
-        cache.listFiles()?.filter { it.lastModified() <= now }?.forEach { it.delete() }
-        val hash = MessageDigest.getInstance("SHA-256")
-        hash.update((info.optString("key", info.optString("id")) + "." + ext).toByteArray())
-        source.inputStream().use { stream ->
-            val buf = ByteArray(32768)
-            while (true) {
-                val n = stream.read(buf)
-                if (n < 0) break
-                hash.update(buf, 0, n)
-            }
+    private fun openOffice(source: File, ext: String) {
+        val original = File(temp, "document." + ext)
+        check(source.renameTo(original)) { "无法准备预览文件" }
+        if (closed) return
+        val reader = OfficeReader(this)
+        office = reader
+        if (closed) {
+            reader.close()
+            return
         }
-        val cached = File(cache, hash.digest().joinToString("") { "%02x".format(it) } + ".pdf")
-        if (cached.isFile && cached.lastModified() > now) return cached
-        val http = PiggyServer.url("/mobile/preview").openConnection() as HttpURLConnection
-        conversion = http
-        try {
-            http.requestMethod = "POST"
-            http.doOutput = true
-            http.instanceFollowRedirects = false
-            http.connectTimeout = 15000
-            http.readTimeout = 90000
-            http.setRequestProperty("X-Piggy-Version-Code", BuildConfig.VERSION_CODE.toString())
-            http.setRequestProperty("X-Piggy-Format", ext)
-            http.setRequestProperty("Content-Type", "application/octet-stream")
-            http.setFixedLengthStreamingMode(source.length())
-            http.outputStream.use { out -> source.inputStream().use { it.copyTo(out) } }
-            if (http.responseCode != 200) {
-                val detail = http.errorStream?.bufferedReader()?.use { it.readLine()?.take(512) }
-                throw IOException(
-                    runCatching { JSONObject(detail.orEmpty()).getString("error") }
-                        .getOrDefault("预览服务暂时不可用")
+        val info =
+            reader.request(OfficeReader.OPEN, Bundle().apply { putString("path", original.path) })
+        officeKind = info.getInt("kind")
+        count = info.getInt("count")
+        onScreen { showPage(index) }
+    }
+
+    private fun showOfficePage(reader: OfficeReader, current: Int) {
+        background {
+            if (closed || current != index) return@background
+            val page = reader.request(OfficeReader.PAGE, Bundle().apply { putInt("part", current) })
+            val sheet = officeKind == 1
+            val label =
+                if (sheet) page.getString("name").orEmpty().ifBlank { "工作表 ${current+1}" }
+                else "第 ${current+1} 页"
+            onScreen {
+                if (current != index) return@onScreen
+                if (sheet) {
+                    pager.visibility = View.VISIBLE
+                    prev.text = "上一表"
+                    next.text = "下一表"
+                    prev.contentDescription = "上一张工作表"
+                    next.contentDescription = "下一张工作表"
+                    position.text = if (count > 1) "$label  ▾  ·  ${current+1} / $count" else label
+                    if (count > 1) {
+                        position.contentDescription = "选择工作表，$label"
+                        position.isFocusable = true
+                        position.setOnClickListener { selectSheet(reader) }
+                    }
+                    position.maxLines = 2
+                    position.ellipsize = TextUtils.TruncateAt.END
+                }
+                content.removeAllViews()
+                content.addView(
+                    OfficePage(
+                        this,
+                        page.getInt("width"),
+                        page.getInt("height"),
+                        sheet,
+                        label + "，双击或双指缩放",
+                    ) { area, w, h, ready ->
+                        background paint@{
+                            if (closed || current != index) return@paint
+                            val reply =
+                                reader.request(
+                                    OfficeReader.PAINT,
+                                    Bundle().apply {
+                                        putInt("part", current)
+                                        putInt("w", w)
+                                        putInt("h", h)
+                                        putInt("x", area.left)
+                                        putInt("y", area.top)
+                                        putInt("dw", area.width())
+                                        putInt("dh", area.height())
+                                    },
+                                )
+                            @Suppress("DEPRECATION")
+                            val bitmap = checkNotNull(reply.getParcelable<Bitmap>("pixels"))
+                            onScreen { if (current == index) ready(bitmap) }
+                        }
+                    }
                 )
             }
-            val staged = File(temp, "converted.pdf")
-            staged.outputStream().use { out ->
-                http.inputStream.use { copyBounded(it, out, 64L * 1024 * 1024) }
+        }
+    }
+
+    private fun selectSheet(reader: OfficeReader) {
+        position.isEnabled = false
+        background {
+            val names =
+                sheetNames
+                    ?: buildList {
+                            while (size < count && !closed) {
+                                val reply =
+                                    reader.request(
+                                        OfficeReader.SHEETS,
+                                        Bundle().apply { putInt("offset", size) },
+                                    )
+                                addAll(checkNotNull(reply.getStringArray("names")))
+                            }
+                        }
+                        .toTypedArray()
+                        .also { sheetNames = it }
+            onScreen {
+                position.isEnabled = true
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("选择工作表")
+                    .setSingleChoiceItems(names, index) { dialog, which ->
+                        dialog.dismiss()
+                        showPage(which)
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
             }
-            check(staged.length() > 4 && until > System.currentTimeMillis()) { "预览已过期" }
-            staged.setLastModified(minOf(until, now + week))
-            return if (staged.renameTo(cached)) cached else staged
-        } finally {
-            http.disconnect()
-            conversion = null
         }
     }
 
@@ -385,7 +427,10 @@ class PreviewActivity : Activity() {
         next.isEnabled = index < count - 1
         prev.alpha = if (prev.isEnabled) 1f else .4f
         next.alpha = if (next.isEnabled) 1f else .4f
-        if (pdf != null) {
+        val reader = office
+        if (reader != null) {
+            showOfficePage(reader, current)
+        } else if (pdf != null) {
             val width = resources.displayMetrics.widthPixels
             background {
                 if (closed || current != index) return@background
@@ -414,7 +459,41 @@ class PreviewActivity : Activity() {
                 onScreen {
                     if (current == index) {
                         content.removeAllViews()
-                        content.addView(ZoomPage(this, bitmap, current + 1))
+                        content.addView(
+                            ZoomPage(this, bitmap, current + 1) { area, w, h, ready ->
+                                background {
+                                    if (closed || current != index) return@background
+                                    val shrink = minOf(1.0, sqrt(3200000.0 / w / h))
+                                    val detail =
+                                        Bitmap.createBitmap(
+                                            (w * shrink).toInt().coerceAtLeast(1),
+                                            (h * shrink).toInt().coerceAtLeast(1),
+                                            Bitmap.Config.ARGB_8888,
+                                        )
+                                    detail.eraseColor(Color.WHITE)
+                                    pdf!!.openPage(current).use { page ->
+                                        val matrix =
+                                            Matrix().apply {
+                                                setScale(
+                                                    detail.width / (area.width() * page.width),
+                                                    detail.height / (area.height() * page.height),
+                                                )
+                                                postTranslate(
+                                                    -area.left * detail.width / area.width(),
+                                                    -area.top * detail.height / area.height(),
+                                                )
+                                            }
+                                        page.render(
+                                            detail,
+                                            null,
+                                            matrix,
+                                            PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY,
+                                        )
+                                    }
+                                    onScreen { if (current == index) ready(detail) }
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -562,7 +641,7 @@ class PreviewActivity : Activity() {
 
     override fun onDestroy() {
         closed = true
-        conversion?.disconnect()
+        office?.close()
         client.close()
         browser?.let {
             content.removeView(it)

@@ -1,0 +1,9 @@
+LibreOfficeKit 26.2.7.3. Copyright The Document Foundation and contributors.
+Distributed under Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/)
+and the terms of its included third-party components.
+The exact unmodified F-Droid release APK, including its original resources,
+is included in assets/office.lopack. Corresponding source and build logs for
+version codes 132–135 are linked from:
+https://f-droid.org/packages/org.documentfoundation.libreoffice/
+https://github.com/LibreOffice/core/tree/libreoffice-26.2.7.3
+https://gitlab.com/fdroid/fdroiddata/-/blob/master/metadata/org.documentfoundation.libreoffice.yml

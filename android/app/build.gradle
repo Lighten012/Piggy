@@ -3,16 +3,28 @@ plugins {
     id 'org.jetbrains.kotlin.android' version '2.2.21'
 }
 
+def officeAbi = providers.gradleProperty('officeAbi').orElse('arm64-v8a')
+def officeAssets = layout.buildDirectory.dir('office/assets')
+def prepareOffice = tasks.register('prepareOffice', Exec) {
+    inputs.file(rootProject.file('prepare-office.py'))
+    inputs.property('abi', officeAbi)
+    outputs.dir(officeAssets)
+    commandLine 'python3', rootProject.file('prepare-office.py'), officeAbi.get(),
+        officeAssets.get().asFile, new File(gradle.gradleUserHomeDir, 'caches/piggy-office')
+}
+
 android {
+    androidResources { noCompress += 'lopack' }
     namespace 'dev.pichat'
     compileSdk 36
+    sourceSets.main.assets.srcDir(officeAssets)
     buildFeatures { buildConfig = true }
     defaultConfig {
         applicationId 'dev.pichat'
         minSdk 24
         targetSdk 36
-        versionCode 21
-        versionName '0.11.0'
+        versionCode 22
+        versionName '0.12.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -29,3 +41,5 @@ dependencies {
     implementation "io.noties.markwon:ext-strikethrough:4.6.2"
     implementation "io.noties.markwon:ext-tables:4.6.2"
 }
+
+tasks.named("preBuild").configure { dependsOn prepareOffice }

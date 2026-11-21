@@ -25,7 +25,6 @@ const mobileContext = "/mobile/context"
 const mobileFiles = "/mobile/attachments"
 
 func gateway(password, workerToken string, target *url.URL, files http.Handler) http.Handler {
-	office := officeProxy()
 	expected := sha256.Sum256([]byte("piggy:" + password))
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
 		owner := "admin"
@@ -58,7 +57,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			proxy.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles || r.URL.Path == mobileContext || r.URL.Path == previewPath {
+		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles || r.URL.Path == mobileContext {
 			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Mode") != "" {
 				fail(w, 403, "网页仅支持查看记录")
 				return
@@ -75,10 +74,6 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			}
 			if r.Header.Get("X-Piggy-Version-Code") != strconv.Itoa(release.Code) {
 				fail(w, 426, "请重新打开 Piggy 并更新到 "+release.Name+" 后继续")
-				return
-			}
-			if r.URL.Path == previewPath {
-				office.ServeHTTP(w, r)
 				return
 			}
 			proxy.ServeHTTP(w, r)
@@ -105,9 +100,6 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 }
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "serve-preview" {
-		log.Fatal(serveOffice())
-	}
 	if len(os.Args) > 1 {
 		if len(os.Args) != 3 || os.Args[1] != "publish-android" {
 			log.Fatal("usage: piggy-admin publish-android <prepared-directory>")

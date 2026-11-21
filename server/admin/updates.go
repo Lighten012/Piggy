@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -52,9 +53,40 @@ func updateDirectory() string {
 	return "/lighten012/projects/Piggy/updates/android"
 }
 
-// Publish the immutable APK first. Readers see the new manifest only after the
-// entire binary has been verified and synced to disk.
+var alternateABIs = []string{"armeabi-v7a", "x86", "x86_64"}
+
+// Publish CPU-specific packages before switching the default manifest. Older
+// clients receive an installable ARM64 package with a CPU-aware updater.
 func publishAndroid(dir, bundle string) error {
+	primary, err := readRelease(bundle)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "variants")); err == nil {
+		for _, abi := range alternateABIs {
+			src := filepath.Join(bundle, "variants", abi)
+			v, err := readRelease(src)
+			if err != nil {
+				return err
+			}
+			if v.Code != primary.Code || v.Name != primary.Name || v.Signer != primary.Signer || v.MinSDK != primary.MinSDK {
+				return errors.New("inconsistent Android CPU variant")
+			}
+			if err := publishPackage(variantDir(dir, v.Code, abi), src); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) || primary.Code >= 22 {
+		return fmt.Errorf("missing Android CPU packages: %w", err)
+	}
+	return publishPackage(dir, bundle)
+}
+
+func variantDir(dir string, code int, abi string) string {
+	return filepath.Join(dir, "variants", fmt.Sprint(code), abi)
+}
+
+func publishPackage(dir, bundle string) error {
 	next, err := readRelease(bundle)
 	if err != nil {
 		return err
@@ -143,6 +175,35 @@ func androidUpdates(dir string, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, updatePrefix)
+	abi := r.URL.Query().Get("abi")
+	if abi != "" && abi != "arm64-v8a" {
+		known := false
+		for _, a := range alternateABIs {
+			if abi == a {
+				known = true
+				break
+			}
+		}
+		if !known {
+			http.NotFound(w, r)
+			return
+		}
+		primary, err := readRelease(dir)
+		if err != nil {
+			fail(w, 503, "版本信息暂时不可用")
+			return
+		}
+		code := primary.Code
+		if name != "latest.json" && name != "Piggy.apk" {
+			requested, err := strconv.Atoi(r.URL.Query().Get("v"))
+			if err != nil || requested <= 0 || requested > primary.Code {
+				http.NotFound(w, r)
+				return
+			}
+			code = requested
+		}
+		dir = variantDir(dir, code, abi)
+	}
 	if name == "latest.json" || name == "Piggy.apk" {
 		release, err := readRelease(dir)
 		if errors.Is(err, os.ErrNotExist) {
@@ -154,7 +215,11 @@ func androidUpdates(dir string, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if name == "Piggy.apk" {
-			http.Redirect(w, r, updatePrefix+release.SHA+".apk", http.StatusTemporaryRedirect)
+			target := updatePrefix + release.SHA + ".apk"
+			if abi != "" && abi != "arm64-v8a" {
+				target += "?abi=" + abi + "&v=" + strconv.Itoa(release.Code)
+			}
+			http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
