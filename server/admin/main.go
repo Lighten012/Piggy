@@ -87,7 +87,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			fail(w, 405, "网页仅支持查看记录")
 			return
 		}
-		if (r.URL.Path == "/history" && r.Method == http.MethodGet) || strings.HasPrefix(r.URL.Path, "/history/files/") {
+		if r.URL.Path == "/capabilities" || (r.URL.Path == "/history" && r.Method == http.MethodGet) || strings.HasPrefix(r.URL.Path, "/history/files/") {
 			proxy.ServeHTTP(w, r)
 			return
 		}

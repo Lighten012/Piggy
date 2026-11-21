@@ -1,9 +1,17 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 
+import Capabilities from "./Capabilities.vue";
 import MarkdownMessage from "./MarkdownMessage.vue";
 import piggyMark from "../../../../android/app/src/main/res/drawable-nodpi/piggy_portrait.webp?no-inline";
 
+function currentView() { return location.hash === "#capabilities" ? "capabilities" : "history"; }
+const view = ref(currentView());
+async function navigate() {
+  view.value = currentView();
+  await nextTick();
+  if (view.value === "history") refresh();
+}
 const turns = ref([]);
 const thread = ref(null);
 const loading = ref(true);
@@ -18,7 +26,7 @@ let fetching = false, timer;
 const controller = new AbortController();
 
 async function refresh(back = false) {
-  if (fetching) return;
+  if (fetching || view.value !== "history") return;
   fetching = true;
   const box = thread.value;
   const first = turns.value[0], last = turns.value.at(-1);
@@ -58,18 +66,23 @@ async function refresh(back = false) {
 }
 onMounted(() => {
   refresh();
+  window.addEventListener("hashchange", navigate);
   timer = setInterval(() => { if (!document.hidden) { now.value = Date.now() + serverOffset; refresh(); } }, 3000);
   document.addEventListener("visibilitychange", visible);
 });
 function visible() { if (!document.hidden) { now.value = Date.now() + serverOffset; refresh(); } }
-onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEventListener("visibilitychange", visible);});
+onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInterval(timer); controller.abort(); document.removeEventListener("visibilitychange", visible);});
 </script>
 <template>
   <header class="masthead"><div class="bar">
     <div class="brand"><img class="piggy-avatar" :src="piggyMark" alt="" width="44" height="44"><span>Piggy</span></div>
-    <span class="mode">只读</span>
+    <nav aria-label="管理端导航">
+      <a href="#history" :aria-current="view === 'history' ? 'page' : undefined">对话记录</a>
+      <a href="#capabilities" :aria-current="view === 'capabilities' ? 'page' : undefined">Agent 能力</a>
+    </nav>
   </div></header>
-  <main>
+  <Capabilities v-if="view === 'capabilities'" />
+  <main v-show="view === 'history'">
     <div class="heading"><h1>手机对话记录</h1></div>
     <p v-if="error" class="alert" role="status">{{ error }}</p>
     <section id="thread" ref="thread" aria-label="手机对话记录" tabindex="0">
@@ -105,6 +118,11 @@ onUnmounted(() => {clearInterval(timer); controller.abort(); document.removeEven
 </template>
 
 <style scoped>
+nav {display:flex;gap:4px;align-items:center}
+nav a {padding:8px 12px;min-height:44px;display:inline-flex;align-items:center;border-radius:22px;text-decoration:none;color:var(--muted);font-size:.92rem}
+nav a[aria-current="page"] {color:var(--berry);background:#f2e4e7;font-weight:600}
+nav a:focus-visible {outline:2px solid var(--berry);outline-offset:2px}
+@media(max-width:440px) { nav a {padding-inline:8px} }
 .piggy-avatar { object-fit: contain; border-radius: 50%; }
 .attachment { display: grid; justify-items: end; gap: 4px; max-width: 100%; }
 .attachment-photo { display: block; max-width: min(180px, 60vw); max-height: 140px; border-radius: 10px; }

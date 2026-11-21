@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { capabilityCatalog } from "./capabilities.ts";
 import { Journal } from "./journal.ts";
 
 test("records accepted mobile turns and restores context after restart", async t => {
@@ -77,6 +78,9 @@ test("records accepted mobile turns and restores context after restart", async t
     assert.equal(res.status,200);
     return (await res.text()).trim().split("\n").map(line=>JSON.parse(line));
   }
+  assert.equal((await fetch(worker.base+"/capabilities")).status,401);
+  assert.notEqual((await fetch(worker.base+"/capabilities",{headers:mobile})).status,200);
+  assert.deepEqual(await (await fetch(worker.base+"/capabilities",{headers:admin})).json(),capabilityCatalog());
   assert.equal((await fetch(worker.base+"/history")).status,401);
   assert.notEqual((await fetch(worker.base+"/history",{headers:mobile})).status,200);
   assert.equal((await fetch(worker.base+"/chat",{method:"POST",headers:admin})).status,405);

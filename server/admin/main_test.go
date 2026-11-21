@@ -20,7 +20,7 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.URL.Path != "/chat" && r.URL.Path != "/context" && r.URL.Path != "/history" && r.URL.Path != "/attachments" && r.URL.Path != "/history/files/test") || r.Header.Get("Authorization") != "Bearer internal" {
+		if (r.URL.Path != "/capabilities" && r.URL.Path != "/chat" && r.URL.Path != "/context" && r.URL.Path != "/history" && r.URL.Path != "/attachments" && r.URL.Path != "/history/files/test") || r.Header.Get("Authorization") != "Bearer internal" {
 			t.Error("unexpected upstream request")
 		}
 		w.Header().Set("X-Test-Owner", r.Header.Get("X-Piggy-Owner"))
@@ -34,6 +34,9 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 		want         int
 		owner        string
 	}{
+		{"GET", "/capabilities", false, 401, ""}, {"GET", "/capabilities", true, 200, "admin"},
+		{"HEAD", "/capabilities", true, 200, "admin"}, {"POST", "/capabilities", true, 405, ""},
+		{"GET", "/mobile/capabilities", false, 401, ""},
 		{"POST", mobileContext, false, 200, "mobile"}, {"GET", mobileContext, false, 405, ""},
 		{"POST", mobileFiles, false, 200, "mobile"}, {"GET", mobileFiles, false, 405, ""},
 		{"POST", mobileChat, false, 200, "mobile"}, {"GET", mobileChat, false, 405, ""},

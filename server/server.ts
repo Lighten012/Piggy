@@ -5,10 +5,11 @@ import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/opena
 import { Retention } from "./retention.ts";
 import { Journal, type Attachment } from "./journal.ts";
 import { readFileSync } from "node:fs";
+import { agentTools, capabilityCatalog, loadedSkills } from "./capabilities.ts";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { createModels, type Model } from "@earendil-works/pi-ai";
+import { createModels, toToolDeclaration, type Model } from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
-import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
+import { convertResponsesMessages, convertResponsesTools } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import type { Message } from "@earendil-works/pi-ai";
 
@@ -73,11 +74,11 @@ function addFiles(input: unknown[], files: Attachment[]) {
   for (const file of files) user.content.push(file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} :
     {type:"input_file",file_id:file.remote});
 }
-async function countInput(input: unknown[], signal?: AbortSignal) {
+async function countInput(input: unknown[], tools?: unknown[], signal?: AbortSignal) {
   const timeout = AbortSignal.timeout(20000);
   const response = await fetch(model.baseUrl + "/responses/input_tokens", {
     method: "POST", headers: {authorization: "Bearer " + apiKey, "content-type": "application/json"},
-    body: JSON.stringify({model:model.id, input}), signal: signal ? AbortSignal.any([signal,timeout]) : timeout,
+    body: JSON.stringify({model:model.id, input, tools}), signal: signal ? AbortSignal.any([signal,timeout]) : timeout,
   });
   if (!response.ok) {
     await response.body?.cancel();
@@ -88,22 +89,23 @@ async function countInput(input: unknown[], signal?: AbortSignal) {
   return {used, limit:contextLimit};
 }
 function promptForFiles(stored: number, available: number) {
-  return persona + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
+  const prompt = [persona, ...loadedSkills.map(skill => skill.instructions)].join("\n\n");
+  return prompt + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
 }
 type ContextUsage = Awaited<ReturnType<typeof countInput>>;
 function newAgent(files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["previous"]>,
     measured: (usage: ContextUsage) => void,
     rejectGeneration: (message: string) => void) {
   return new Agent({
-    initialState: { systemPrompt, messages, model, thinkingLevel },
+    initialState: { systemPrompt, messages, model, thinkingLevel, tools:agentTools },
     getApiKey: () => apiKey,
     streamFn: (_model, context, options) => streamResponses(model, context, {
       ...options, maxTokens: thinkingLevel === "high" ? 16384 : 2048, maxRetries: 0,
       async onPayload(payload) {
-        const {input} = payload as {input: {role?:string; content?:unknown}[]};
+        const {input, tools} = payload as {tools?:unknown[]; input: {role?:string; content?:unknown}[]};
         addFiles(input, files);
         let usage: ContextUsage;
-        try { usage = await countInput(input, options?.signal); }
+        try { usage = await countInput(input, tools, options?.signal); }
         catch (error) {
           rejectGeneration(files.length && error instanceof Error && /HTTP (400|404|415|422)$/.test(error.message)
             ? "无法统计此附件的上下文，请减少附件内容或更换文件后重试"
@@ -155,7 +157,8 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
         systemPrompt:promptForFiles(stored.length, files.length), messages
       }), new Set(["openai"]));
       addFiles(input,files);
-      const usage = await countInput(input);
+      const tools = agentTools.length ? convertResponsesTools(agentTools.map(toToolDeclaration), {supportsStrictMode:true}) : undefined;
+      const usage = await countInput(input, tools);
       res.writeHead(200,{"Content-Type":"application/json"});
       res.end(JSON.stringify(usage));
     } catch { reject(res,503,"上下文用量暂时无法读取"); }
@@ -246,6 +249,12 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if (!timingSafeEqual(digest(req.headers.authorization || ""), workerAuth)) return reject(res,401,"身份无效");
   const url = new URL(req.url || "/", "http://localhost");
+  if (url.pathname === "/capabilities" && req.headers["x-piggy-owner"] === "admin" &&
+      (req.method === "GET" || req.method === "HEAD")) {
+    res.writeHead(200, {"Content-Type":"application/json"});
+    res.end(req.method === "HEAD" ? undefined : JSON.stringify(capabilityCatalog()));
+    return;
+  }
   const prefix = "/history/files/";
   if (url.pathname.startsWith(prefix) && req.headers["x-piggy-owner"] === "admin" &&
       (req.method === "GET" || req.method === "HEAD")) {
