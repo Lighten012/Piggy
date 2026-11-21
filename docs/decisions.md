@@ -52,4 +52,6 @@ Android 发送前在本地保存请求编号、内容与附件编号，然后在
 
 ## 后台发送的省电设置
 
-Android「侧边栏 → 设置 → 允许后台高耗电」显示本机的操作路径。OPPO 优先尝试 ColorOS 的「应用耗电管理」，vivo 和 iQOO 优先尝试「后台高耗电」列表。只打开当前用户可访问的厂商系统页面；该入口缺失或受限时，依次尝试系统电池页、应用信息和系统设置。其他 Android 设备优先打开当前应用的电池用量页。用户在系统内选择策略，Piggy 只在发送消息或等待回复时运行前台服务。
+Android 设置页按机型命名入口。vivo / iQOO 显示「后台耗电管理」，优先用电池组件公开的后台耗电管理 action 打开列表，用户选择当前安装的 Piggy 后再选「允许后台耗电」。此处采用维护者在 vivo S50 Pro mini（OriginOS 6）看到的菜单文字。公开固件样本可以核对列表入口，但不能证明每个版本都向第三方开放单应用详情。OPPO 显示「应用耗电管理」，由用户进入 Piggy 后开启后台活动。厂商入口不可用时先显示本机操作路径，用户可以选择继续前往系统电池设置。Android 通用入口继续打开本应用的电池页。
+
+入口核对依据包括[公开 vivo 系统镜像中的电池组件声明](https://github.com/el-vertedero/iqoo_canoe_dump/tree/e73f73042dee4591810c3727bb2d7d84b233bd96/system/system/app/IqooPowerSaving)和 [ColorOS 14.1 使用手册的应用耗电管理说明](https://s3.eu-west-3.amazonaws.com/par-sow-cms-oppo-com/cms/userManual/manual/3524d044-8881-4c19-b61f-c2da2949c1f7/ColorOS%2014.1%20User%20Manual.pdf)。该 vivo 镜像来自其他设备；具体机型仍需真机核对。

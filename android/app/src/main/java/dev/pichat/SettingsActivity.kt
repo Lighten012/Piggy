@@ -2,7 +2,6 @@ package dev.pichat
 
 import android.app.Activity
 import android.os.Bundle
-import android.view.View
 import android.widget.TextView
 import android.widget.Toolbar
 import androidx.core.view.ViewCompat
@@ -26,6 +25,9 @@ class SettingsActivity : Activity() {
         findViewById<Toolbar>(R.id.settings_toolbar).setNavigationOnClickListener { finish() }
         val device = PowerSettingsDevice.current()
         findViewById<TextView>(R.id.power_directions).text = device.directions(getString(R.string.app_name))
-        findViewById<View>(R.id.background_power).setOnClickListener { openBackgroundPowerSettings(device) }
+        findViewById<TextView>(R.id.background_power).apply {
+            text = device.menu
+            setOnClickListener { openBackgroundPowerSettings(device) }
+        }
     }
 }
