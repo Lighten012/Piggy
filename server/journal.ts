@@ -9,6 +9,9 @@ export interface Attachment {
 
 import type { ModelSettings } from "./model-settings.ts";
 
+export interface ContextTurn { sequence: number; messages: AgentMessage[] }
+export interface ContextReplacement { through: number; last: number; summary: AgentMessage }
+
 interface Copy { key: string; until: number; mime: string }
 
 export class Journal {
@@ -149,13 +152,30 @@ export class Journal {
     return ids.map(id => this.attachment(conversation,id));
   }
 
+  contextTurns(conversation: string): ContextTurn[] {
+    const turns: ContextTurn[] = [];
+    const rows = this.db.prepare("SELECT sequence,messages FROM active_context WHERE conversation=? ORDER BY sequence");
+    for (const row of rows.iterate(conversation))
+      turns.push({sequence:Number(row.sequence), messages:JSON.parse(String(row.messages))});
+    return turns;
+  }
   contextMessages(conversation: string): AgentMessage[] {
-    const messages: AgentMessage[] = [];
-    const rows = this.db.prepare("SELECT messages FROM active_context WHERE conversation=? ORDER BY sequence");
-    for (const row of rows.iterate(conversation)) {
-      for (const message of JSON.parse(String(row.messages))) messages.push(message);
-    }
-    return messages;
+    return this.contextTurns(conversation).flatMap(turn => turn.messages);
+  }
+  private replacePrefix(conversation: string, replacement: ContextReplacement) {
+    const {through,last,summary} = replacement;
+    const latest = this.db.prepare("SELECT max(sequence) AS last FROM active_context WHERE conversation=?").get(conversation);
+    if (latest?.last !== last) throw new Error("Conversation changed during compaction");
+    // Keep the latest upload and generated-file references independently, even if
+    // they were attached to different turns in the replaced prefix.
+    const changed = this.db.prepare(`
+      UPDATE active_context SET messages=?,
+        files=(SELECT files FROM active_context WHERE conversation=? AND sequence<=? AND files IS NOT NULL ORDER BY sequence DESC LIMIT 1),
+        output_files=(SELECT output_files FROM active_context WHERE conversation=? AND sequence<=? AND output_files IS NOT NULL ORDER BY sequence DESC LIMIT 1)
+      WHERE conversation=? AND sequence=?
+    `).run(JSON.stringify([summary]),conversation,through,conversation,through,conversation,through);
+    if (changed.changes !== 1) throw new Error("Missing compaction boundary");
+    this.db.prepare("DELETE FROM active_context WHERE conversation=? AND sequence<?").run(conversation,through);
   }
   lookup(conversation: string, request: string) {
     return this.db.prepare("SELECT id,question,answer,status,attachment FROM turns WHERE conversation=? AND request=?").get(conversation,request);
@@ -174,12 +194,13 @@ export class Journal {
       throw error;
     }
   }
-  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = []) {
+  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = [], replacement?: ContextReplacement) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const turn = this.db.prepare("UPDATE turns SET answer=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
         .get(answer,id);
       if (!turn) throw new Error("Turn is no longer pending");
+      if (replacement) this.replacePrefix(String(turn.conversation),replacement);
       const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until) VALUES(?,?,?,?,?,?,?)");
       outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until));
       this.db.prepare("INSERT INTO active_context(conversation,messages,files,output_files) VALUES(?,?,?,?)")

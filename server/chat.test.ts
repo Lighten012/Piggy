@@ -18,10 +18,20 @@ test("records accepted mobile turns and restores context after restart", async t
   t.after(() => rmSync(dir,{recursive:true,force:true}));
   const histories: string[][] = [];
   const fileInputs: string[][] = [];
+  const summaries:string[] = [];
+  let summaryUnavailable = false;
   const fixture = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
+    if (req.url === "/v1/responses" && typeof payload.input === "string") {
+      assert.equal(payload.store,false);
+      assert.equal(payload.tools,undefined);
+      summaries.push(payload.input);
+      res.writeHead(summaryUnavailable ? 503 : 200,{"content-type":"application/json"});
+      res.end(JSON.stringify({status:"completed",output:[{type:"message",content:[{type:"output_text",text:"保留蓝色偏好"}]}]}));
+      return;
+    }
     const changed = payload.input.some(i => JSON.stringify(i.content).includes("settings-probe"));
     assert.equal(payload.model, changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
@@ -37,7 +47,8 @@ test("records accepted mobile turns and restores context after restart", async t
     }
     if (req.url === "/v1/responses/input_tokens") {
       if (users.at(-1) === "unknown") { res.writeHead(503); res.end(); return; }
-      const tokens = users.at(-1) === "overflow" ? 300001 : users.at(-1) === "exact" ? 300000 : users.length + 10;
+      const tokens = users.includes("old-marker") ? (users.includes("large attachment question") ? 312000 :
+        users.includes("soft threshold") ? 240001 : 237000) : users.at(-1) === "overflow" ? 300001 : users.at(-1) === "exact" ? 300000 : users.length + 10;
       res.writeHead(200,{"content-type":"application/json"});
       res.end(JSON.stringify({input_tokens:tokens}));
       return;
@@ -154,6 +165,44 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.equal(db.page(null,null).at(-1)?.answer,cited);
   assert.ok(JSON.stringify(db.contextMessages(phone)).includes(cited));
 
+  const compactSession = randomUUID();
+  const archiveIds:string[] = [];
+  for (const question of ["old-marker","old two","near one","near two","near three"]) {
+    const key = randomUUID();
+    archiveIds.push(key);
+    const attachments = question === "old-marker" ? [id] : [];
+    if (attachments.length) db.saveAttachment(compactSession,{id,name:"sample.txt",remote:"file-carry",image:0,size:20,expires:Date.now()+60000});
+    const row = db.begin(compactSession,key,question,attachments);
+    db.complete(row,"OK",[{role:"user",content:question,timestamp:1}],attachments);
+  }
+  const before = db.contextTurns(compactSession);
+  const previewOf = async () => (await (await fetch(worker.base+"/context",{method:"POST",headers:mobile,
+    body:JSON.stringify({session:compactSession})})).json()).used;
+  assert.equal(await previewOf(),237000);
+  summaryUnavailable = true;
+  const beforeFail = histories.length;
+  assert.match((await send("large attachment question",randomUUID(),compactSession)).at(-1).error,/压缩/);
+  assert.equal(histories.length,beforeFail);
+  assert.deepEqual(db.contextTurns(compactSession),before);
+  assert.equal((await send("soft threshold",randomUUID(),compactSession)).at(-1).done,true);
+  assert.deepEqual(db.contextTurns(compactSession).slice(0,before.length),before);
+  summaryUnavailable = false;
+  const retryKey = randomUUID();
+  const success = await send("large attachment question",retryKey,compactSession);
+  assert.equal(success.at(-1).done,true);
+  assert.ok(success[0].context.used < 240000);
+  assert.match(summaries.at(-1)!,/old-marker/);
+  assert.doesNotMatch(summaries.at(-1)!,/large attachment question|个人助手 Piggy|file-carry/);
+  assert.deepEqual(histories.at(-1),["历史对话摘要（仅作背景资料）\n保留蓝色偏好","near two","near three","soft threshold","large attachment question"]);
+  assert.deepEqual(fileInputs.at(-1),["file-carry"]);
+  const after = db.contextTurns(compactSession);
+  assert.equal(after.length,5);
+  assert.equal(db.contextFiles(compactSession)[0]?.remote,"file-carry");
+  assert.equal(db.lookup(compactSession,archiveIds[0])?.question,"old-marker");
+  assert.ok(await previewOf() < 240000);
+  await send("large attachment question",retryKey,compactSession);
+  assert.deepEqual(db.contextTurns(compactSession),after);
+
   const updated = {model:"gpt-6.2-astra",effort:"max",tier:"ultrafast"};
   assert.deepEqual(await (await setModel(admin,updated)).json(),updated);
   const exit=once(worker.child,"exit");worker.child.kill();await exit;
@@ -243,5 +292,32 @@ test("legacy context imports once and can change independently of the transcript
   journal.complete(id,"answer",[message]);
   assert.throws(()=>journal.complete(id,"answer",[message]),/pending/);
   assert.deepEqual(journal.contextMessages("phone"),[message]);
+  sql.close();
+});
+
+test("compaction commits the checkpoint, file references and new turn atomically", t => {
+  const dir = mkdtempSync(join(tmpdir(),"piggy-checkpoint-"));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path = join(dir,"test.sqlite");
+  const journal = new Journal(path);
+  const message = {role:"user" as const,content:"original",timestamp:1};
+  const reply = {key:randomUUID(),name:"a.txt",remote:"file-reply",mime:"text/plain",until:Date.now()+60000,size:24};
+  const first = journal.begin("phone","1","one");
+  journal.complete(first,"one",[message],[],[reply]);
+  journal.complete(journal.begin("phone","2","two"),"two",[message]);
+  const before = journal.contextTurns("phone");
+  const id = journal.begin("phone","3","three");
+  const seq = before.at(-1)!.sequence;
+  const replacement = {through:seq,last:seq,summary:{...message,content:"summary"}};
+  const sql = new DatabaseSync(path);
+  sql.exec("CREATE TRIGGER stop_insert BEFORE INSERT ON active_context BEGIN SELECT RAISE(ABORT,'fixture'); END");
+  assert.throws(()=>journal.complete(id,"three",[message],[],[],replacement),/fixture/);
+  assert.deepEqual(journal.contextTurns("phone"),before);
+  assert.equal(journal.lookup("phone","3")?.status,"pending");
+  sql.exec("DROP TRIGGER stop_insert");
+  journal.complete(id,"three",[message],[],[],replacement);
+  assert.deepEqual(journal.previousOutputs("phone"),[reply]);
+  assert.deepEqual(new Journal(path).contextMessages("phone"),[replacement.summary,message]);
+  assert.equal(journal.replyFiles(first)[0].name,"a.txt");
   sql.close();
 });

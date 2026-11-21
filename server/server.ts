@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { isDeepStrictEqual } from "node:util";
+import { contextLimit, ContextError, prepareHistory, summarize } from "./compaction.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
@@ -54,7 +56,6 @@ function activeSettings() {
   if (!validSettings(current)) throw new Error("Unsupported stored model settings");
   return current;
 }
-const contextLimit = 300_000;
 const persona = "你是个人助手 Piggy。按用户使用的语言回答，清楚、简洁。遇到新闻、需要核实的近期变化或用户明确要求联网时，使用网页搜索核实，按来源的发布日期和事件日期回答，提供可点击的行内出处。无法查证时如实说明。用户要求图片或可下载的文件时，调用对应工具实际生成。使用代码解释器生成的文件请在最终答复中链接到 sandbox:/mnt/data/ 下的成品。";
 function addFiles(input: unknown[], files: Attachment[]) {
   if (!files.length) return;
@@ -64,6 +65,7 @@ function addFiles(input: unknown[], files: Attachment[]) {
   for (const file of files) user.content.push(file.image ? {type:"input_image",file_id:file.remote,detail:"auto"} :
     {type:"input_file",file_id:file.remote});
 }
+class ProviderWindowExceeded extends Error {}
 async function countInput(model: Model<"openai-responses">, input: unknown[], tools?: unknown[], signal?: AbortSignal) {
   const timeout = AbortSignal.timeout(20000);
   const response = await fetch(model.baseUrl + "/responses/input_tokens", {
@@ -71,7 +73,8 @@ async function countInput(model: Model<"openai-responses">, input: unknown[], to
     body: JSON.stringify({model:model.id, input, tools}), signal: signal ? AbortSignal.any([signal,timeout]) : timeout,
   });
   if (!response.ok) {
-    await response.body?.cancel();
+    const error = await response.json().catch(() => null);
+    if (error?.error?.code === "context_length_exceeded") throw new ProviderWindowExceeded();
     throw new Error("Input count HTTP " + response.status);
   }
   const { input_tokens: used } = await response.json();
@@ -88,13 +91,23 @@ function promptForFiles(stored: number, available: number) {
   return prompt + "\n当前北京时间日期：" + today + "。" + (available < stored ? " 部分附件已过期；如需原文，请用户重新上传。" : "");
 }
 type ContextUsage = Awaited<ReturnType<typeof countInput>>;
-function newAgent(model: Model<"openai-responses">, settings: ModelSettings, outputs: ReplyFiles, search: WebSearch, availableIds: string[], files: Attachment[], systemPrompt: string, messages: ReturnType<Journal["contextMessages"]>,
+function wireInput(model: Model<"openai-responses">, systemPrompt:string, messages:Message[], files:Attachment[]) {
+  const input = convertResponsesMessages(model, normalizeContext({systemPrompt,messages}), new Set(["openai"]));
+  addFiles(input,files);
+  return input;
+}
+function countFailure(files:Attachment[], error:unknown) {
+  return files.length && error instanceof Error && /HTTP (400|404|415|422)$/.test(error.message)
+    ? "无法统计此附件的上下文，请减少附件内容或更换文件后重试"
+    : "暂时无法核对上下文用量，请稍后重试";
+}
+function newAgent(model: Model<"openai-responses">, settings: ModelSettings, outputs: ReplyFiles, search: WebSearch, availableIds: string[], files: Attachment[], systemPrompt: string, count: (input: unknown[], tools: unknown[], signal?:AbortSignal) => Promise<ContextUsage>,
     reportTier: (tier: string) => void, measured: (usage: ContextUsage) => void,
     rejectGeneration: (message: string) => void) {
   // Pi 1.5.2 has no max effort; onPayload applies the exact OpenAI setting.
   const thinkingLevel = (settings.effort === "max" ? "xhigh" : settings.effort) as "off"|"low"|"medium"|"high"|"xhigh";
   return new Agent({
-    initialState: { systemPrompt, messages, model, thinkingLevel, tools:agentTools },
+    initialState: { systemPrompt, model, thinkingLevel, tools:agentTools },
     getApiKey: () => apiKey,
     streamFn: (_model, context, options) => streamResponses(model, context, {
       ...options, maxTokens: thinkingLevel === "off" ? 2048 : 16384, maxRetries: 0,
@@ -112,11 +125,9 @@ function newAgent(model: Model<"openai-responses">, settings: ModelSettings, out
         const tools = body.tools = [...(body.tools ?? []), ...responseTools(availableIds)];
         addFiles(input, files);
         let usage: ContextUsage;
-        try { usage = await countInput(model, input, tools, options?.signal); }
+        try { usage = await count(input, tools, options?.signal); }
         catch (error) {
-          rejectGeneration(files.length && error instanceof Error && /HTTP (400|404|415|422)$/.test(error.message)
-            ? "无法统计此附件的上下文，请减少附件内容或更换文件后重试"
-            : "暂时无法核对上下文用量，请稍后重试");
+          rejectGeneration(countFailure(files,error));
           throw error;
         }
         measured(usage);
@@ -162,10 +173,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       const files = stored.filter((file): file is Attachment => !!file && file.expires > Date.now());
       const messages = journal.contextMessages(data.session) as Message[];
       if (files.length) messages.push({role:"user",content:[{type:"text",text:""}],timestamp:Date.now()});
-      const input = convertResponsesMessages(model, normalizeContext({
-        systemPrompt:promptForFiles(stored.length, files.length), messages
-      }), new Set(["openai"]));
-      addFiles(input,files);
+      const input = wireInput(model,promptForFiles(stored.length,files.length),messages,files);
       const tools = agentTools.length ? convertResponsesTools(agentTools.map(toToolDeclaration), {supportsStrictMode:true}) : undefined;
       const usage = await countInput(model, input, [...(tools ?? []), ...responseTools(toolFileIds(data.session,files))]);
       res.writeHead(200,{"Content-Type":"application/json"});
@@ -200,7 +208,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   if (ids.length && stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
   const files = stored.filter((f): f is Attachment => !!f && f.expires > Date.now());
   if (ids.length && files.length !== ids.length) return reject(res,410,"附件已过期，请重新选择");
-  const messages = journal.contextMessages(conversation);
+  const turns = journal.contextTurns(conversation);
   const id = journal.begin(conversation,request,question,ids);
   busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
@@ -211,10 +219,21 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const outputs = new ReplyFiles(retention,model.baseUrl,apiKey);
   const search = new WebSearch();
   let actualTier: string | undefined;
-  const agent = newAgent(model,settings,outputs,search,toolFileIds(conversation,files),files,promptForFiles(stored.length,files.length),messages,
+  const availableIds = toolFileIds(conversation,files);
+  const systemPrompt = promptForFiles(stored.length,files.length);
+  const declared = convertResponsesTools(agentTools.map(toToolDeclaration), {supportsStrictMode:true});
+  const tools = [...declared, ...responseTools(availableIds)];
+  const controller = new AbortController();
+  let cache: {input:unknown[]; tools:unknown[]; usage:ContextUsage} | undefined;
+  async function count(input:unknown[], tools:unknown[], signal?:AbortSignal) {
+    if (cache && isDeepStrictEqual(input,cache.input) && isDeepStrictEqual(tools,cache.tools)) return cache.usage;
+    const usage = await countInput(model,input,tools,signal);
+    cache = {input,tools,usage};
+    return usage;
+  }
+  const agent = newAgent(model,settings,outputs,search,availableIds,files,systemPrompt,count,
     tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
-  const initialMessageCount = agent.state.messages.length;
-  const stop = () => agent.abort();
+  const stop = () => { controller.abort(); agent.abort(); };
   res.once("close", stop);
   const timer = setTimeout(stop, 360000);
   let partial = "";
@@ -229,7 +248,19 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   let committed = false;
 
   try {
-    await agent.prompt(question);
+    const current:Message = {role:"user",content:question,timestamp:Date.now()};
+    const prepared = await prepareHistory(turns,async history => {
+      const input = wireInput(model,systemPrompt,[...history,current],files);
+      try { return (await count(input,tools,controller.signal)).used; }
+      catch (error) {
+        if (error instanceof ProviderWindowExceeded) return Infinity;
+        throw new ContextError(countFailure(files,error));
+      }
+    }, prefix => summarize(model,apiKey!,prefix,controller.signal), controller.signal);
+    controller.signal.throwIfAborted();
+    agent.state.messages = [...agent.state.messages,...prepared.messages];
+    const initialMessageCount = agent.state.messages.length;
+    await agent.prompt(current);
     const last = agent.state.messages.at(-1);
     if (res.destroyed || last?.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       const reason = last?.role === "assistant" ? last.errorMessage ?? "" : "";
@@ -250,14 +281,18 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       last.content = [...last.content.filter(part => part.type !== "text"), {type:"text",
         text:answer+"\n回复附件："+outputs.files.map(f=>f.name).join("、")}];
     }
-    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files);
+    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, prepared.replacement);
     committed = true;
     emit({ done:true, session:conversation, answer, replyFiles:journal.replyFiles(id) });
-    console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", webSearchUsed:search.used,
+    console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", compacted:!!prepared.replacement, webSearchUsed:search.used,
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
-  } catch {
+  } catch (error) {
     if (committed) return;
+    if (error instanceof ContextError) {
+      failure = error.message;
+      if (error.used !== undefined && Number.isFinite(error.used)) emit({context:{used:error.used,limit:contextLimit}});
+    }
     await outputs.discard().catch(() => console.warn("Could not clean staged reply files"));
     journal.fail(id,partial);
     console.info(JSON.stringify({event:"chat", owner:"mobile", status:"failed", durationMs:Date.now()-started}));
