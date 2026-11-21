@@ -131,6 +131,7 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
 .history-wall {
   --lake: url("../../../../android/app/src/main/res/drawable-nodpi/dusk_lake.webp");
   display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   background: linear-gradient(to right, #e9d9ec 62%, transparent 88%) center / cover,
