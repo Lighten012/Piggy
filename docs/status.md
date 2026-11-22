@@ -7,9 +7,11 @@
 | 环境 | 服务端部署提交 | Android 发布版本 | 运行情况 |
 |---|---|---|---|
 | 正式 · 8888 | [15a7fab](https://github.com/Lighten012/Piggy/commit/15a7fabb840dcca49e9312e58a59a31bacc713ec) | `0.13.1`，versionCode 25 | Go、Pi 均在运行 |
-| 测试 · 8889 | [764913b](https://github.com/Lighten012/Piggy/commit/764913b2b0661ddbe5c51632d756bea631aa6031) | `0.14.0-test.7`，versionCode 41 | Go、Pi 均在运行 |
+| 测试 · 8889 | [764913b](https://github.com/Lighten012/Piggy/commit/764913b2b0661ddbe5c51632d756bea631aa6031) | `0.14.0-test.8`，versionCode 42 | Go、Pi 均在运行 |
 
 ## 已交付及验收范围
+
+- **Android 附件操作菜单。** 在聊天或图片预览中长按可选保存、外部打开或分享。Android 14 模拟器验证关闭菜单不产生保存副本，外部打开与分享均弹出系统选择器。隔离接收应用成功读取原图和分享的文本文件，核对了 MIME 类型、只读授权和内容哈希。四种测试架构已发布，ARM64 从 test.7 原地更新到 test.8。服务端沿用上次部署。
 
 - **回复附件随文展示与保存。** 真实模型将两张合成图片分别裁为 16×16 PNG，两个成品的位置与各自说明对应。Android 14 模拟器验证两图一文依次嵌入正文、重启后显示及聊天和大图预览的长按保存。已核对相册和下载索引，保存的原件逐字节一致。25 项服务端回归通过，四种架构均已发布，ARM64 从 test.6 原地更新成功。
 
