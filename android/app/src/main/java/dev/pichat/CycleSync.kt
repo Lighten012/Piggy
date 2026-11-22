@@ -40,7 +40,7 @@ internal object CycleSync {
         if (!p.contains("seq")) {
             val pending = JSONArray()
             fun add(op: JSONObject) { pending.put(op.put("seq", pending.length() + 1)) }
-            if (p.contains("length")) add(settings(p.getInt("length", 28), p.getInt("duration", 5)))
+            if (p.contains("length")) add(settings(p.getInt("length", DEFAULT_CYCLE_DAYS), p.getInt("duration", DEFAULT_PERIOD_DAYS)))
             p.getStringSet("starts", emptySet()).orEmpty().map { it.toInt() }.sorted().forEach { start ->
                 val op = record("period", start)
                 if (p.contains("end_$start")) op.put("end", iso(p.getInt("end_$start", start)))

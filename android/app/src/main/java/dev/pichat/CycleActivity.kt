@@ -103,7 +103,7 @@ class CycleActivity : Activity() {
     private fun model(): CycleCalendar {
         val starts = prefs.getStringSet("starts", emptySet()).orEmpty().mapNotNull { it.toIntOrNull() }.toSet()
         val ends = starts.filter { prefs.contains("end_$it") }.associateWith { prefs.getInt("end_$it", it) }
-        return CycleCalendar(starts, prefs.getInt("length", 28), prefs.getInt("duration", 5), ends)
+        return CycleCalendar(starts, prefs.getInt("length", DEFAULT_CYCLE_DAYS), prefs.getInt("duration", DEFAULT_PERIOD_DAYS), ends)
     }
     private fun dateText(day: Int) = CivilDay.calendar(day).run {
         "${get(Calendar.MONTH) + 1}月${get(Calendar.DAY_OF_MONTH)}日"
@@ -139,8 +139,7 @@ class CycleActivity : Activity() {
         day.predictedEnd == date -> "预计止"
         day.ovulation -> "排卵"
         day.period -> "经期"
-        day.fertile -> "易孕"
-        else -> day.phase?.removeSuffix("期").orEmpty()
+        else -> day.phase.orEmpty()
     }
     private fun render() {
         content.removeAllViews()
@@ -178,9 +177,8 @@ class CycleActivity : Activity() {
                     val mark = dayMark(day, info)
                     val fill = when (mark) {
                         "开始", "起止", "结束", "实记", "预计止", "经期" -> rose
-                        "易孕" -> mint
                         "排卵" -> lilac
-                        else -> paper
+                        else -> if (info?.fertile == true) mint else paper
                     }
                     column().apply {
                         gravity = Gravity.CENTER
@@ -221,8 +219,7 @@ class CycleActivity : Activity() {
                 else -> null
             },
             if (info.period) info.predictedEnd?.let { "预计 ${dateText(it)} 结束" } else null,
-            info.phase?.let { "预计$it" },
-            if (info.fertile) "预计易孕窗" else null
+            info.phase?.takeUnless { info.period }?.let { "预计$it" }
         ).joinToString(" · ")
         detail.addView(label(description, 15, muted).apply { setPadding(0, dp(6), 0, dp(12)) })
         if (selected <= today) {

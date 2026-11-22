@@ -1,5 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
+import { appendReceipt } from "./operation-receipt.ts";
+
 export interface Fact { id:number; content:string; turnId:number }
 export interface FactEdit { content:string; quote:string; previous?:Fact }
 
@@ -96,6 +98,7 @@ export class MemoryStore {
           ids.push(Number(row.id));
         }
       }
+      appendReceipt(this.db,turn,conversation,`已保存记忆：${edits.map(e=>e.content).join("；")}`);
       this.db.exec("COMMIT");
       return ids;
     } catch(error) { this.db.exec("ROLLBACK"); throw error; }

@@ -24,6 +24,7 @@ test("tool uses the caller's calendar, requires a quote and keeps the end on dup
   const store=new CycleStore(new DatabaseSync(":memory:")),today="2026-11-22";
   const [read,write]=cycleTools(store,"a","我在11月1日开始，5日结束",today);
   await assert.rejects(write.execute("call",{start:"2026-11-01",quote:"替他登记"}));
+  await read.execute("read",{});
   await write.execute("call",{start:"2026-11-01",end:"2026-11-05",quote:"11月1日开始，5日结束"});
   await write.execute("call",{start:"2026-11-01",quote:"11月1日开始"});
   assert.match(JSON.stringify(await read.execute("read",{})),/2026-11-05/);
@@ -33,7 +34,8 @@ test("an ongoing period accepts omitted, null and blank ends and returns the pho
   const store=new CycleStore(new DatabaseSync(":memory:")),today="2026-11-22";
   const start="2026-11-21",quote="昨天来的";
   store.sync("a",[{seq:1,kind:"settings",length:28,duration:7}],today);
-  const [,write]=cycleTools(store,"a",quote,today);
+  const [read,write]=cycleTools(store,"a",quote,today);
+  await read.execute("read",{});
   for(const args of [{},{end:null},{end:""},{end:"  "}]) {
     const reply=await write.execute("record",{start,quote,...args});
     assert.deepEqual(JSON.parse(reply.content[0].text),{start,end:null,estimatedEnd:"2026-11-27"});
@@ -80,7 +82,7 @@ test("chat corrects dates atomically and preserves the mobile sync cursor",async
     await assert.rejects(update.execute("call",{...args,...patch}));
     assert.deepEqual(store.read("a"),before);
   }
-  await update.execute("call",{...args,newStart:"2026-11-12"});
+  await update.execute("call",{...args,newStart:"2026-11-12",newEnd:null});
   assert.deepEqual(store.sync("a",[],today),{...before,errors:[],periods:[{start:"2026-11-12",end:original.end},before.periods[1]]});
   await read.execute("call",{});
   store.record("a","2026-11-12","2026-11-16",today);
@@ -94,13 +96,28 @@ test("chat updates only requested settings and rejects stale or invalid edits",a
   const store=new CycleStore(new DatabaseSync(":memory:")),today="2026-11-22",quote="改一下我的周期设置";
   const [read,,,,settings]=cycleTools(store,"a",quote,today);
   await read.execute("read",{});
-  await assert.rejects(settings.execute("call",{expectedPeriodDays:28,quote}));
+  await assert.rejects(settings.execute("call",{expectedPeriodDays:30,quote}));
   await assert.rejects(settings.execute("call",{cycleDays:35,quote:"其他人的要求"}));
-  store.sync("a",[{seq:1,kind:"settings",length:30,duration:6}],today);
+  store.sync("a",[{seq:1,kind:"settings",length:31,duration:6}],today);
   await assert.rejects(settings.execute("call",{cycleDays:35,quote}),/变化/);
   await read.execute("read",{});
   await settings.execute("call",{cycleDays:35,quote});
   await settings.execute("call",{expectedPeriodDays:7,quote});
   assert.deepEqual(store.sync("a",[],today),{length:35,duration:7,periods:[],through:1,errors:[]});
-  assert.equal(store.read("b").length,28);
+  assert.equal(store.read("b").length,30);
+});
+
+test("a mobile deletion wins over an in-flight chat even after another read",async()=>{
+  const store=new CycleStore(new DatabaseSync(":memory:")),today="2026-11-22";
+  assert.deepEqual(store.read("a"),{length:30,duration:7,periods:[],through:0});
+  const start="2026-11-11",quote="帮我补记结束日";
+  store.record("a",start,undefined,today);
+  const [read,record]=cycleTools(store,"a",quote,today);
+  await read.execute("read",{});
+  store.sync("a",[{seq:1,kind:"remove",start}],today);
+  const args={start,end:"2026-11-15",quote};
+  await assert.rejects(record.execute("call",args),/变化/);
+  await read.execute("read",{});
+  await assert.rejects(record.execute("call",args),/撤销/);
+  assert.deepEqual(store.read("a").periods,[]);
 });

@@ -30,6 +30,8 @@ test("records accepted mobile turns and restores context after restart", async t
   const fileGroups:string[][][]=[];
   const summaries:string[] = [];
   let recallTurn=0;
+  let repeatedCalls=0, stoppedLoop=false, receiptSteps=0;
+  let recalledContainerIds:string[]=[];
   const recalledInputs:unknown[]=[];
   let summaryUnavailable = false;
   let transientCounts = 0;
@@ -111,7 +113,32 @@ test("records accepted mobile turns and restores context after restart", async t
       res.end(JSON.stringify({ error: { message: "Test failure" } }));
       return;
     }
+    const loop = users.at(-1) === "tool loop";
+    const receipt = users.at(-1) === "请登记十一月一日经期";
+    if (receipt && receiptSteps === 2) {
+      res.writeHead(503,{"content-type":"application/json"});
+      res.end(JSON.stringify({error:{message:"response interrupted"}}));
+      return;
+    }
     res.writeHead(200, { "content-type": "text/event-stream" });
+    if ((loop && payload.tool_choice !== "none" && repeatedCalls < 3) || receipt) {
+      const firstRead = receipt && receiptSteps === 0;
+      const name = firstRead ? "read_cycle_calendar" : "record_period";
+      const args = firstRead ? {} : {start:"2026-11-01",quote:receipt ? "请登记十一月一日经期" : "missing quote"};
+      if (receipt) receiptSteps++;
+      else repeatedCalls++;
+      const item={type:"function_call",name,id:"fc_"+histories.length,call_id:"call_"+histories.length,status:"completed",arguments:JSON.stringify(args)};
+      for (const event of [
+        {type:"response.output_item.added",output_index:0,item:{...item,arguments:""}},
+        {type:"response.output_item.done",output_index:0,item},
+        {type:"response.completed",response:{id:"resp_test",status:"completed",output:[item]}},
+      ]) res.write("data: "+JSON.stringify(event)+"\n\n");
+      res.end("data: [DONE]\n\n");
+      return;
+    }
+    if(loop) stoppedLoop=payload.tool_choice==="none";
+    if(users.at(-1)==="reopen archived file" && payload.input.at(-1).type==="function_call_output")
+      recalledContainerIds=payload.tools.find(t=>t.type==="code_interpreter").container.file_ids ?? [];
     if (["reopen archived file","请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1))
         && payload.input.at(-1).type !== "function_call_output") {
       const recall=users.at(-1)==="reopen archived file";
@@ -272,7 +299,8 @@ test("records accepted mobile turns and restores context after restart", async t
     const attachments = question === "old-marker" ? [id] : [];
     if (attachments.length) db.saveAttachment(compactSession,{id,name:"sample.txt",remote:"file-carry",image:0,size:20,expires:Date.now()+60000});
     const row = db.begin(compactSession,key,question,attachments);
-    db.complete(row,"OK",[{role:"user",content:question,timestamp:1}],attachments);
+    const outputs=["old-marker","near one"].includes(question) ? [{key:randomUUID(),remote:question==="old-marker" ? "file-old-result" : "file-new-result",until:Date.now()+60000,name:question==="old-marker" ? "budget.xlsx" : "new.xlsx",size:1024,mime:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}] : [];
+    db.complete(row,"OK",[{role:"user",content:question,timestamp:1}],attachments,outputs);
   }
   const before = db.contextTurns(compactSession);
   const previewOf = async () => (await (await fetch(worker.base+"/context",{method:"POST",headers:mobile,
@@ -304,8 +332,24 @@ test("records accepted mobile turns and restores context after restart", async t
 
   recallTurn=Number(db.lookup(compactSession,archiveIds[0])!.id);
   assert.equal(db.searchChatHistory(compactSession,99999,["sample.txt"]).matches[0].turnId,recallTurn);
+  assert.deepEqual(db.previousOutputs(compactSession).map(f=>f.remote),["file-new-result"]);
   assert.equal((await send("reopen archived file",randomUUID(),compactSession)).at(-1).done,true);
   assert.ok(recalledInputs.some(part=>part?.file_id==="file-carry"));
+
+  assert.ok(recalledContainerIds.includes("file-old-result"));
+  assert.equal(db.searchChatHistory(compactSession,99999,["budget.xlsx"]).matches[0].turnId,recallTurn);
+  assert.deepEqual(db.readChatContext(compactSession,99999,"turn",recallTurn).turns[0].replyFiles,[{name:"budget.xlsx",available:true}]);
+  assert.deepEqual(db.readChatContext(randomUUID(),99999,"turn",recallTurn).turns,[]);
+  assert.equal((await send("tool loop",randomUUID(),randomUUID())).at(-1).done,true);
+  assert.equal(repeatedCalls,2);
+  assert.ok(stoppedLoop);
+  const receiptSession=randomUUID(), receiptRequest=randomUUID();
+  const receiptAnswer=(await send("请登记十一月一日经期",receiptRequest,receiptSession)).at(-1);
+  assert.equal(receiptAnswer.done,true);
+  assert.match(receiptAnswer.answer,/已登记 2026-11-01/);
+  assert.deepEqual(db.cycles.read(receiptSession).periods,[{start:"2026-11-01",end:null}]);
+  assert.equal((await send("请登记十一月一日经期",receiptRequest,receiptSession)).at(-1).answer,receiptAnswer.answer);
+  assert.equal(receiptSteps,2);
 
   const memoryDb = new DatabaseSync(join(dir,"test.sqlite"));
   const entries = () => memoryDb.prepare("SELECT conversation,content FROM memories ORDER BY id").all().map(row=>[row.conversation,row.content]);
@@ -463,4 +507,19 @@ test("compaction commits the checkpoint, file references and new turn atomically
   assert.deepEqual(new Journal(path).contextMessages("phone"),[replacement.summary,message]);
   assert.equal(journal.replyFiles(first)[0].name,"a.txt");
   sql.close();
+});
+
+test("restart confirms committed changes and rolls back writes with the wrong turn",t=>{
+  const dir=mkdtempSync(join(tmpdir(),"piggy-receipt-"));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,"db");
+  const db=new Journal(path);
+  const id=db.begin("a","1","帮我登记");
+  assert.throws(()=>db.cycles.record("b","2026-10-11",undefined,"2026-11-22",undefined,id));
+  assert.deepEqual(db.cycles.read("b").periods,[]);
+  db.cycles.record("a","2026-10-11",undefined,"2026-11-22",undefined,id);
+  const reopened=new Journal(path);
+  assert.equal(reopened.lookup("a","1")?.status,"complete");
+  assert.match(String(reopened.lookup("a","1")?.answer),/已登记 2026-10-11/);
+  assert.equal(reopened.contextMessages("a").length,2);
 });

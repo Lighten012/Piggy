@@ -57,7 +57,11 @@ export class Journal {
         until INTEGER NOT NULL, mime TEXT NOT NULL, UNIQUE(conversation,attachment)
       );
       CREATE INDEX IF NOT EXISTS local_expiry ON local_files(until);
-      UPDATE turns SET status='failed' WHERE status='pending';
+      CREATE TABLE IF NOT EXISTS operation_receipts (
+        id INTEGER PRIMARY KEY, turn_id INTEGER NOT NULL REFERENCES turns(id), text TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS receipt_turn ON operation_receipts(turn_id);
+
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='attachment'").get()) {
       this.db.exec("ALTER TABLE turns ADD COLUMN attachment TEXT");
@@ -81,6 +85,18 @@ export class Journal {
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
       this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('reply_files') WHERE name='remote'").get()) {
+      this.db.exec(`BEGIN IMMEDIATE;
+        ALTER TABLE reply_files ADD COLUMN remote TEXT;
+        UPDATE reply_files AS f SET remote=old.remote FROM (
+          SELECT json_extract(j.value,'$.key') AS key,json_extract(j.value,'$.remote') AS remote
+          FROM active_context a,json_each(a.output_files) j WHERE a.output_files IS NOT NULL
+        ) old WHERE old.key=f.key;
+        COMMIT`);
+    }
+    for(const row of this.db.prepare("SELECT id FROM turns WHERE status='pending'").all())
+      this.finishInterrupted(Number(row.id),"");
+
   }
 
   replyPhrases(): string[] {
@@ -174,6 +190,13 @@ export class Journal {
     return this.db.prepare("SELECT key,name,mime,size,until FROM reply_files WHERE turn_id=? ORDER BY position")
       .all(turn).map(row => ({...row,preview:previewType(String(row.mime))}));
   }
+  archivedOutputs(turn:number) {
+    return this.db.prepare("SELECT key,name,size,mime,until,remote FROM reply_files WHERE turn_id=? ORDER BY position")
+      .all(turn) as unknown as (Omit<ReplyFile,"remote"> & {remote:string|null})[];
+  }
+  restoreOutputReference(key:string,remote:string) {
+    this.db.prepare("UPDATE reply_files SET remote=? WHERE key=? AND remote IS NULL").run(remote,key);
+  }
   previousOutputs(conversation: string): ReplyFile[] {
     const row = this.db.prepare(`SELECT output_files FROM active_context WHERE conversation=? AND output_files IS NOT NULL
       ORDER BY sequence DESC LIMIT 1`).get(conversation);
@@ -247,9 +270,10 @@ export class Journal {
       const turn = this.db.prepare("UPDATE turns SET answer=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
         .get(answer,id);
       if (!turn) throw new Error("Turn is no longer pending");
+      this.db.prepare("DELETE FROM operation_receipts WHERE turn_id=?").run(id);
       if (replacement) this.replacePrefix(String(turn.conversation),replacement);
-      const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until) VALUES(?,?,?,?,?,?,?)");
-      outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until));
+      const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until,remote) VALUES(?,?,?,?,?,?,?,?)");
+      outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until,f.remote));
       this.db.prepare("INSERT INTO active_context(conversation,messages,files,output_files) VALUES(?,?,?,?)")
         .run(turn.conversation,JSON.stringify(messages.map(({fileRefs, ...message}:ContextMessage) => message)),files.length ? JSON.stringify(files) : null,outputs.length ? JSON.stringify(outputs) : null);
       this.db.exec("COMMIT");
@@ -265,7 +289,8 @@ export class Journal {
       SELECT t.id,t.created,t.question,t.answer,t.status FROM turns t JOIN json_each(?) word
       ON instr(lower(t.question),word.value)>0 OR instr(lower(t.answer),word.value)>0 OR EXISTS
         (SELECT 1 FROM turn_files f JOIN attachments a ON a.conversation=t.conversation AND a.id=f.attachment
-         WHERE f.turn_id=t.id AND instr(lower(a.name),word.value)>0)
+         WHERE f.turn_id=t.id AND instr(lower(a.name),word.value)>0) OR EXISTS
+        (SELECT 1 FROM reply_files f WHERE f.turn_id=t.id AND instr(lower(f.name),word.value)>0)
       WHERE t.conversation=? AND t.id<? GROUP BY t.id
       ORDER BY count(*) DESC,t.id DESC LIMIT 9 OFFSET ?
     `).all(JSON.stringify(terms),conversation,before,offset);
@@ -289,12 +314,26 @@ export class Journal {
     const turns = [...older,main,...newer].map(row => {
       const question = String(row.question), answer = String(row.answer);
       const end = offset+1200;
-      return {turnId:row.id,created:row.created,status:row.status,attachments:this.turnFiles(Number(row.id)).map(f=>({name:f.name,available:f.expires>Date.now()})),question:question.slice(offset,end),answer:answer.slice(offset,end),
+      return {turnId:row.id,created:row.created,status:row.status,attachments:this.turnFiles(Number(row.id)).map(f=>({name:f.name,available:f.expires>Date.now()})),replyFiles:this.archivedOutputs(Number(row.id)).map(f=>({name:f.name,available:f.until>Date.now()})),question:question.slice(offset,end),answer:answer.slice(offset,end),
         nextOffset:Math.max(question.length,answer.length)>end ? end : undefined};
     });
     return {anchorTurnId:anchor,turns};
   }
 
+  finishInterrupted(id:number|bigint,partial:string) {
+    const receipts=this.db.prepare("SELECT text FROM operation_receipts WHERE turn_id=? ORDER BY id").all(id);
+    if(!receipts.length) { this.fail(id,partial); return; }
+    const answer=receipts.map(r=>r.text).join("\n")+"\n其余回复未能完成。";
+    const turn=this.db.prepare("SELECT question,created FROM turns WHERE id=? AND status='pending'").get(id)!;
+    const timestamp=Number(turn.created);
+    const messages:AgentMessage[]=[
+      {role:"user",content:String(turn.question),timestamp},
+      {role:"assistant",content:[{type:"text",text:answer}],timestamp,api:"openai-responses",provider:"openai",model:"piggy-receipt",stopReason:"stop",
+        usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}},
+    ];
+    this.complete(id,answer,messages,this.turnFiles(id).map(f=>f.id));
+    return answer;
+  }
   fail(id: number | bigint, partial: string) {
     this.db.prepare("UPDATE turns SET status='failed',answer=? WHERE id=? AND status='pending'").run(partial,id);
   }

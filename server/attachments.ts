@@ -54,6 +54,12 @@ async function uploadFile(base:string, key:string, path:string, name:string, mim
   return remote;
 }
 
+// Compacted legacy turns may have a local copy but no durable provider reference.
+export async function restoreOutputReference(retention:Retention,file:{key:string;name:string;mime:string;until:number},base:string,key:string) {
+  const remaining=Math.max(3600,Math.min(lifetime,Math.floor((file.until-Date.now())/1000)));
+  return (await uploadFile(base,key,retention.copyPath(file.key),file.name,file.mime,remaining)).id as string;
+}
+
 // An Android retry reuses the attachment ID and skips the upload endpoint.
 export async function prepareStoredImage(journal:Journal, retention:Retention, conversation:string, file:Attachment, base:string, key:string) {
   if (!file.image) return;

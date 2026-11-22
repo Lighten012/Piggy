@@ -4,6 +4,9 @@ import java.util.Calendar
 import java.util.GregorianCalendar
 import java.util.TimeZone
 
+internal const val DEFAULT_CYCLE_DAYS = 30
+internal const val DEFAULT_PERIOD_DAYS = 7
+
 // Day arithmetic uses civil dates; local midnight and DST never change the length of a cycle.
 internal object CivilDay {
     private const val DAY_MS = 86_400_000L

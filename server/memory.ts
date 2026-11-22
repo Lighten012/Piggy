@@ -1,3 +1,4 @@
+import type {ReplyFile} from "./reply-files.ts";
 import { saveFacts } from "./memory-planner.ts";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
@@ -18,18 +19,18 @@ export const searchMemoryDeclaration = {
 
 export const searchChatDeclaration = {
   name:"search_chat_history",
-  description:"在当前会话的完整聊天记录中用关键词搜索用户和助手的原文。",
+  description:"在当前会话中按关键词搜索问答原文、用户上传和助手生成的文件名。",
   parameters:{type:"object",properties:{keywords:keywordsParameter,offset:offsetParameter},required:["keywords"],additionalProperties:false},
 } as const;
 
 export const readChatDeclaration = {
   name:"read_chat_context",
-  description:"按记忆或聊天轮次编号读取来源原文及前后各两轮。需要核对历史附件原件时将 includeAttachments 设为 true，仅重读锚点轮次的有效附件。用返回的 turnId 可继续查看相邻轮次或较长原文。",
+  description:"按记忆或聊天轮次编号读取来源原文及前后各两轮。需要核对历史附件原件时将 includeAttachments 设为 true，重读锚点轮次中用户上传或助手生成的有效附件，回复文件可在代码解释器中打开。用返回的 turnId 可继续查看相邻轮次或较长原文。",
   parameters:{type:"object",properties:{source:{type:"string",enum:["memory","turn"]},id:{type:"integer",minimum:1},
     includeAttachments:{type:"boolean"},offset:offsetParameter},required:["source","id"],additionalProperties:false},
 } as const;
 
-export function memoryReadTools(journal:Journal, index:MemoryIndex, conversation:string, turn:number|bigint):AgentTool[] {
+export function memoryReadTools(journal:Journal, index:MemoryIndex, conversation:string, turn:number|bigint, restoreOutput?:(file:Omit<ReplyFile,"remote">)=>Promise<string>):AgentTool[] {
   const result = (value:unknown) => ({content:[{type:"text" as const,text:JSON.stringify(value)}],details:{}});
   return [
     {...searchMemoryDeclaration,label:"查找记忆", async execute(_id,params,signal) {
@@ -44,7 +45,20 @@ export function memoryReadTools(journal:Journal, index:MemoryIndex, conversation
       const {source,id,offset,includeAttachments} = params as {source:"memory"|"turn";id:number;offset?:number;includeAttachments?:boolean};
       const context=journal.readChatContext(conversation,turn,source,id,offset);
       const recalledFiles=includeAttachments && context.anchorTurnId ? journal.turnFiles(context.anchorTurnId).filter(f=>f.expires>Date.now()) : [];
-      return {...result(context),details:{recalledFiles}};
+      const outputIds:{remote:string;until:number}[]=[];
+      if(includeAttachments && context.anchorTurnId) {
+        for(const file of journal.archivedOutputs(context.anchorTurnId).filter(f=>f.until>Date.now())) {
+          let remote=file.remote;
+          if(!remote) {
+            if(!restoreOutput) throw new Error("无法取回历史回复附件");
+            remote=await restoreOutput(file);
+            journal.restoreOutputReference(file.key,remote);
+          }
+          outputIds.push({remote,until:file.until});
+          if(file.mime.startsWith("image/")) recalledFiles.push({id:file.key,name:file.name,size:file.size,image:1,remote,expires:file.until});
+        }
+      }
+      return {...result(context),details:{recalledFiles,outputIds}};
     }},
   ];
 }

@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { contextLimit, ContextError, prepareHistory, summarize } from "./compaction.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { AttachmentError, prepareStoredImage, receiveAttachment, uuid } from "./attachments.ts";
+import { AttachmentError, prepareStoredImage, restoreOutputReference, receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import { ReplyFiles, replyText } from "./reply-files.ts";
 import { responseTools } from "./hosted-tools.ts";
@@ -130,8 +130,10 @@ async function countChatInput(model:Model<"openai-responses">, input:unknown[], 
   await delay(300,undefined,{signal});
   return countInput(model,input,tools,signal);
 }
-function toolsForInput(input:unknown[], previous:string[]) {
-  return responseTools([...inputFileIds(input),...previous]);
+function toolsForInput(input:unknown[], previous:string[], messages:Message[]) {
+  const recalled=messages.flatMap(m=>m.role==="toolResult" && m.toolName==="read_chat_context" ?
+    ((m.details as {outputIds?:{remote:string;until:number}[]}|undefined)?.outputIds ?? []).filter(f=>f.until>Date.now()).map(f=>f.remote) : []);
+  return responseTools([...inputFileIds(input),...previous,...recalled]);
 }
 function systemInstructions() {
   const prompt = [persona, ...loadedSkills.map(skill => skill.instructions)].join("\n\n");
@@ -149,7 +151,7 @@ function countFailure(error:unknown) {
 }
 function newAgent(agentTools:AgentTool[], model: Model<"openai-responses">, settings: ModelSettings, outputs: ReplyFiles, search: WebSearch, availableIds: string[], systemPrompt: string, count: (input: unknown[], tools: unknown[], signal?:AbortSignal) => Promise<ContextUsage>,
     reportTier: (tier: string) => void, measured: (usage: ContextUsage) => void,
-    rejectGeneration: (message: string) => void) {
+    rejectGeneration: (message: string) => void, repeatedFailure:()=>boolean) {
   // Pi 1.5.2 has no max effort; onPayload applies the exact OpenAI setting.
   const thinkingLevel = (settings.effort === "max" ? "xhigh" : settings.effort) as "off"|"low"|"medium"|"high"|"xhigh";
   return new Agent({
@@ -169,7 +171,11 @@ function newAgent(agentTools:AgentTool[], model: Model<"openai-responses">, sett
         if (settings.effort !== "off") body.reasoning = {...body.reasoning,effort:settings.effort};
         const input = body.input;
         bindFiles(input,context.messages);
-        const tools = body.tools = [...(body.tools ?? []), ...toolsForInput(input,availableIds)];
+        const tools = body.tools = [...(body.tools ?? []), ...toolsForInput(input,availableIds,context.messages)];
+        if(repeatedFailure()) {
+          Object.assign(body,{tool_choice:"none"});
+          input.push({role:"developer",content:"同一工具以相同参数重复返回了同一错误。本轮停止调用工具，简洁说明哪些操作完成、哪些未完成以及是否需要补充信息。"});
+        }
         let usage: ContextUsage;
         try { usage = await count(input, tools, options?.signal); }
         catch (error) {
@@ -219,7 +225,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       const input = wireInput(model,systemInstructions(),messages);
       const tools = convertResponsesTools(toolDeclarations, {supportsStrictMode:true});
       const previous = journal.previousOutputs(data.session).filter(f=>f.until>Date.now()).map(f=>f.remote);
-      const usage = await countInput(model, input, [...tools, ...toolsForInput(input,previous)]);
+      const usage = await countInput(model, input, [...tools, ...toolsForInput(input,previous,messages)]);
       res.writeHead(200,{"Content-Type":"application/json"});
       res.end(JSON.stringify(usage));
     } catch { reject(res,503,"上下文用量暂时无法读取"); }
@@ -292,10 +298,23 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       catch (error) { throw new ContextError(error instanceof AttachmentError ? error.message : "附件服务暂时不可用，请稍后重试"); }
     }
     const turns = journal.contextTurns(conversation);
-    const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone))];
+    const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id,file=>restoreOutputReference(retention,file,baseUrl,apiKey!)), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone),id)];
+    const runningTools=new Map<string,unknown>();
+    const toolFailures:{name:string;args:unknown;content:unknown}[]=[];
+    let stopTools=false;
     agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,systemPrompt,count,
-      tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
+      tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; },()=>stopTools);
     unsubscribe = agent.subscribe(event => {
+      if(event.type==="tool_execution_start") runningTools.set(event.toolCallId,event.args);
+      if(event.type==="tool_execution_end") {
+        const args=runningTools.get(event.toolCallId);
+        runningTools.delete(event.toolCallId);
+        if(event.isError) {
+          const failure={name:event.toolName,args,content:event.result.content};
+          if(toolFailures.some(old=>isDeepStrictEqual(old,failure))) stopTools=true;
+          else toolFailures.push(failure);
+        }
+      }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         partial += event.assistantMessageEvent.delta;
         emit({ delta: event.assistantMessageEvent.delta });
@@ -304,7 +323,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     const current:FileMessage = {fileRefs:files,role:"user",content:question,timestamp:Date.now()};
     const prepared = await prepareHistory(turns,async history => {
       const input = wireInput(model,systemPrompt,[...history,current]);
-      try { return (await count(input,[...declared,...toolsForInput(input,availableIds)],controller.signal)).used; }
+      try { return (await count(input,[...declared,...toolsForInput(input,availableIds,history)],controller.signal)).used; }
       catch (error) {
         if (error instanceof ProviderWindowExceeded) return Infinity;
         throw new ContextError(countFailure(error));
@@ -348,7 +367,11 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       if (error.used !== undefined && Number.isFinite(error.used)) emit({context:{used:error.used,limit:contextLimit}});
     }
     await outputs.discard().catch(() => console.warn("Could not clean staged reply files"));
-    journal.fail(id,partial);
+    const receipt=journal.finishInterrupted(id,partial);
+    if(receipt) {
+      emit({done:true,session:conversation,answer:receipt,replyFiles:[]});
+      return;
+    }
     console.info(JSON.stringify({event:"chat", owner:"mobile", status:"failed", durationMs:Date.now()-started}));
     if (!res.destroyed) emit({ error: failure });
   } finally {
