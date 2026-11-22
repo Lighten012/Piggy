@@ -7,9 +7,11 @@
 | 环境 | 服务端部署提交 | Android 发布版本 | 运行情况 |
 |---|---|---|---|
 | 正式 · 8888 | [15a7fab](https://github.com/Lighten012/Piggy/commit/15a7fabb840dcca49e9312e58a59a31bacc713ec) | `0.13.1`，versionCode 25 | Go、Pi 均在运行 |
-| 测试 · 8889 | [d3422db](https://github.com/Lighten012/Piggy/commit/d3422dbc41459614ba2475e39a98b6898c2a5ab8) | `0.14.0-test.3`，versionCode 37 | Go、Pi 均在运行 |
+| 测试 · 8889 | [d3f90ab](https://github.com/Lighten012/Piggy/commit/d3f90ab7d700dfaa1d5c3f17be36cddaf11f61e1) | `0.14.0-test.3`，versionCode 37 | Go、Pi 均在运行 |
 
 ## 已交付及验收范围
+
+- **经期日历聊天增删查改。** 测试版支持直接更正实际开始日和结束日，也能调整周期间隔与预计持续天数。在隔离日历用真实模型连续完成登记、更正开始日、修改两项设置、查询与删除，逐轮核对手机同步结果。22 项服务端测试通过，测试网关与管理端能力清单已核对，沿用 Android test.3。
 
 - **聊天撤销经期记录。** 测试版可按实际开始日撤销指定经期，也可只清除实际结束日。使用临时 SQLite 和真实模型连续验证了只询问功能、撤销整次、只撤销结束日，并通过手机日历同步接口核对每轮结果。20 项服务端回归通过。发布后已核对测试网关和网页能力清单，沿用 Android test.3。
 
