@@ -70,7 +70,13 @@ export class CycleStore {
     const state=this.read(session);
     apply(state,{kind:"period",start,end},today);
     this.save(session,state);
-    return state.periods.find(p=>p.start===start);
+    const period=state.periods.find(p=>p.start===start)!;
+    if(period.end!==null) return {...period,estimatedEnd:null};
+    // Match the phone: count the start as day one and stop before the next recorded period.
+    const next=state.periods.find(p=>p.start>start);
+    const dayMs=86_400_000;
+    const estimated=Math.min(Date.parse(start)+(state.duration-1)*dayMs,next ? Date.parse(next.start)-dayMs : Infinity);
+    return {...period,estimatedEnd:new Date(estimated).toISOString().slice(0,10)};
   }
   updatePeriod(session:string, expected:Period, newStart:string|undefined, newEnd:string|undefined, today:string) {
     if(newStart===undefined && newEnd===undefined) throw new Error("请提供要更正的开始日或结束日");
@@ -109,8 +115,8 @@ export class CycleStore {
 }
 export const readCycle = {name:"read_cycle_calendar",description:"读取当前用户的实际经期记录、预测设置和当地今天的日期。",
   parameters:{type:"object",properties:{},required:[],additionalProperties:false}} as const;
-export const recordPeriod = {name:"record_period",description:"按用户本轮亲述登记实际经期。start 为开始日期；只记录开始时省略 end。已存在的开始日可补录或更正结束日。",
-  parameters:{type:"object",properties:{start:{type:"string",description:"YYYY-MM-DD"},end:{type:"string",description:"实际最后一天 YYYY-MM-DD"},quote:{type:"string",description:"逐字引用本条消息中描述自己实际经期的原话"}},
+export const recordPeriod = {name:"record_period",description:"按用户本轮亲述登记实际经期。start 为开始日期；只要开始日就能登记，尚未结束时省略 end 或传 null。estimatedEnd 是预测的最后一天。已存在的开始日可补录或更正结束日。",
+  parameters:{type:"object",properties:{start:{type:"string",description:"YYYY-MM-DD"},end:{anyOf:[{type:"string"},{type:"null"}],description:"仅填写用户确认的实际最后一天 YYYY-MM-DD，未知时省略或传 null"},quote:{type:"string",description:"逐字引用本条消息中描述自己实际经期的原话"}},
     required:["start","quote"],additionalProperties:false}} as const;
 export const cancelPeriod = {name:"cancel_period_record",description:"按已核对的实际开始日撤销一条经期记录，或只清除这次的实际结束日。仅在用户明确要求撤销时使用。",
   parameters:{type:"object",properties:{
@@ -148,9 +154,9 @@ export function cycleTools(store:CycleStore,session:string,question:string,today
       return result({today,cycleDays:length,expectedPeriodDays:duration,periods});
     }},
     {...recordPeriod,label:"登记实际经期",executionMode:"sequential",async execute(_id,args){
-      const {quote,start,end}=args as {quote:string;start:string;end?:string};
+      const {quote,start,end}=args as {quote:string;start:string;end?:string|null};
       checkQuote(quote);
-      return result(store.record(session,start,end??undefined,today));
+      return result(store.record(session,start,end?.trim() || undefined,today));
     }},
     {...cancelPeriod,label:"撤销经期记录",executionMode:"sequential",async execute(_id,args){
       const {start,target,quote}=args as {start:string;target:"period"|"end";quote:string};

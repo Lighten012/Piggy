@@ -242,7 +242,6 @@ class CycleActivity : Activity() {
             }
         }
         content.addView(label("周期 ${cycle.length} 天  ·  预计经期 ${cycle.duration} 天", 14, ink, true))
-        content.addView(label("预测仅供参考，不能用于避孕。", 13, muted).apply { setPadding(0, dp(4), 0, 0) })
     }
     private fun settings() {
         val cycle = model()

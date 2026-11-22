@@ -64,6 +64,8 @@ internal object ReplyPhrases {
     }
 }
 
+private const val PHRASE_INTERVAL_MS = 10_000L
+
 internal class ReplyWait(private val bubble: TextView) {
     private val phrases = ReplyPhrases.current(bubble.context)
     private var index = 0
@@ -80,7 +82,7 @@ internal class ReplyWait(private val bubble: TextView) {
         override fun run() {
             index = (index + 1) % phrases.size
             bubble.hint = phrases[index]
-            bubble.postDelayed(this, 4000)
+            bubble.postDelayed(this, PHRASE_INTERVAL_MS)
         }
     }
 
@@ -106,7 +108,7 @@ internal class ReplyWait(private val bubble: TextView) {
         if (!waiting) return
         bubble.hint = phrases[index]
         if (!visible) return
-        if (phrases.size > 1) bubble.postDelayed(rotate, 4000)
+        if (phrases.size > 1) bubble.postDelayed(rotate, PHRASE_INTERVAL_MS)
         if (Settings.Global.getFloat(bubble.context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f)
             animation.start()
     }
