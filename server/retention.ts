@@ -35,6 +35,10 @@ export class Retention {
     }
     return { key, until };
   }
+  copyPath(key:string) {
+    if (!archiveKey.test(key)) throw new Error("Invalid archive key");
+    return join(this.dir,key);
+  }
   async remove(key: string) {
     try { await unlink(join(this.dir,key)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

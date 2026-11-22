@@ -16,7 +16,7 @@ type ContextMessage = AgentMessage & {fileRefs?: Attachment[]};
 export interface ContextTurn { sequence: number; messages: ContextMessage[] }
 export interface ContextReplacement { through: number; last: number; summary: AgentMessage }
 
-interface Copy { key: string; until: number; mime: string }
+interface Copy { key: string; until: number; mime: string; providerName?: string }
 
 function keywordExcerpt(text:string, terms:string[], size:number) {
   if (text.length <= size) return text;
@@ -69,6 +69,8 @@ export class Journal {
       CREATE INDEX IF NOT EXISTS turn_files_attachment ON turn_files(attachment);
       INSERT OR IGNORE INTO turn_files SELECT id,0,attachment FROM turns WHERE attachment IS NOT NULL;
     `);
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('local_files') WHERE name='provider_name'").get())
+      this.db.exec("ALTER TABLE local_files ADD COLUMN provider_name TEXT");
     this.memories=new MemoryStore(this.db);
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())
@@ -127,10 +129,25 @@ export class Journal {
     try {
       this.db.prepare("INSERT INTO attachments(conversation,id,name,size,image,remote,expires) VALUES(?,?,?,?,?,?,?)")
         .run(conversation,file.id,file.name,file.size,file.image,file.remote,file.expires);
-      if (copy) this.db.prepare("INSERT INTO local_files(key,conversation,attachment,until,mime) VALUES(?,?,?,?,?)")
-        .run(copy.key,conversation,file.id,copy.until,copy.mime);
+      if (copy) this.db.prepare("INSERT INTO local_files(key,conversation,attachment,until,mime,provider_name) VALUES(?,?,?,?,?,?)")
+        .run(copy.key,conversation,file.id,copy.until,copy.mime,copy.providerName ?? null);
       this.db.prepare(`DELETE FROM attachments WHERE expires < ? AND NOT EXISTS
         (SELECT 1 FROM turn_files f JOIN turns t ON t.id=f.turn_id WHERE t.conversation=attachments.conversation AND f.attachment=attachments.id)`).run(Date.now());
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK"); throw error;
+    }
+  }
+  uncheckedImage(conversation: string, id: string) {
+    return this.db.prepare("SELECT key,mime FROM local_files WHERE conversation=? AND attachment=? AND provider_name IS NULL AND until>?")
+      .get(conversation,id,Date.now()) as {key:string;mime:string} | undefined;
+  }
+  recordImageFormat(conversation:string, id:string, remote:string, mime:string, providerName:string) {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("UPDATE attachments SET remote=? WHERE conversation=? AND id=?").run(remote,conversation,id);
+      this.db.prepare("UPDATE local_files SET mime=?,provider_name=? WHERE conversation=? AND attachment=?")
+        .run(mime,providerName,conversation,id);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK"); throw error;

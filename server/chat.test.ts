@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -12,6 +12,7 @@ import { defaultSettings, modelChoices } from "./model-settings.ts";
 import { persona } from "./persona.ts";
 import { capabilityCatalog } from "./capabilities.ts";
 import { DatabaseSync } from "node:sqlite";
+import { Retention, week } from "./retention.ts";
 import { Journal } from "./journal.ts";
 
 test("records accepted mobile turns and restores context after restart", async t => {
@@ -33,15 +34,20 @@ test("records accepted mobile turns and restores context after restart", async t
   let summaryUnavailable = false;
   let transientCounts = 0;
   let unavailableCounts = 0;
+  const imageUploads:string[] = [];
   let fileNumber=0;
   const fixture = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.url === "/v1/files" || req.url?.startsWith("/v1/vector_stores")) {
       res.setHeader("content-type","application/json");
+      if (req.url === "/v1/files" && body.includes('filename="camera.jpg"')) {
+        assert.match(body,/Content-Type: image\/jpeg/i);
+        imageUploads.push("file_fixture_"+(fileNumber+1));
+      }
       if (req.url.endsWith("/search")) {res.end(JSON.stringify({data:[]}));return;}
       if (req.method==="GET") { res.writeHead(404); res.end("{}"); return; }
-      res.end(JSON.stringify(req.url === "/v1/files" ? {id:"file_fixture_"+ ++fileNumber} :
+      res.end(JSON.stringify(req.url === "/v1/files" ? {id:"file_fixture_"+ ++fileNumber,created_at:Math.floor(Date.now()/1000)} :
         req.url === "/v1/vector_stores" ? {id:"vs_fixture"} : {status:"completed"}));
       return;
     }
@@ -212,6 +218,31 @@ test("records accepted mobile turns and restores context after restart", async t
   await (await fetch(worker.base+"/chat",{method:"POST",headers:mobile,body:JSON.stringify({text:"read",session:fileSession,attachments:[otherId]})})).text();
   assert.equal((await send("new topic",randomUUID(),fileSession)).at(-1).done,true);
   assert.deepEqual(fileGroups.slice(-2),Array(2).fill([["file-notes"],["file-B"],[]]));
+
+  const imageSession=randomUUID(), fresh=randomUUID(), legacy=randomUUID(), imageName="camera.PNG";
+  const jpeg=Buffer.from("ffd8ffe000104a4649460001","hex");
+  const uploadHeaders={...mobile,"content-type":"image/png","x-piggy-session":imageSession,
+    "x-piggy-attachment":fresh,"x-piggy-filename":Buffer.from(imageName).toString("base64url")};
+  assert.equal((await fetch(worker.base+"/attachments",{method:"POST",headers:uploadHeaders,body:jpeg})).status,200);
+  assert.equal(imageUploads.length,1);
+  const archive=new Retention(join(dir,"test.sqlite")), source=join(dir,"legacy-image");
+  writeFileSync(source,jpeg);
+  const copy=await archive.keep(source), expires=Date.now()+week;
+  db.saveAttachment(imageSession,{id:legacy,name:imageName,size:jpeg.length,image:1,remote:"old-PNG",expires},{...copy,mime:"image/png"});
+  async function sendImages() {
+    const res=await fetch(worker.base+"/chat",{method:"POST",headers:mobile,
+      body:JSON.stringify({text:"read images",session:imageSession,attachments:[fresh,legacy]})});
+    assert.match(await res.text(),/"done":true/);
+  }
+  await sendImages();
+  assert.equal(imageUploads.length,2);
+  assert.deepEqual(fileInputs.slice(-2),[imageUploads,imageUploads]);
+  const repaired=db.attachment(imageSession,legacy)!;
+  assert.deepEqual([repaired.remote,repaired.expires,repaired.name],[imageUploads[1],expires,imageName]);
+  assert.equal(db.retained(copy.key)?.mime,"image/jpeg");
+  await sendImages();
+  assert.equal(imageUploads.length,2);
+  assert.equal((await fetch(worker.base+"/attachments",{method:"POST",headers:{...uploadHeaders,"x-piggy-attachment":randomUUID()},body:"broken"})).status,415);
 
   const longSession = randomUUID();
   const questions = Array.from({length:100}, (_,i) => "turn "+(i+1));

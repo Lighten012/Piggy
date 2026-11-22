@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { contextLimit, ContextError, prepareHistory, summarize } from "./compaction.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { receiveAttachment, uuid } from "./attachments.ts";
+import { AttachmentError, prepareStoredImage, receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import { ReplyFiles, replyText } from "./reply-files.ts";
 import { responseTools } from "./hosted-tools.ts";
@@ -108,6 +108,9 @@ async function countInput(model: Model<"openai-responses">, input: unknown[], to
   if (!response.ok) {
     const error = await response.json().catch(() => null);
     if (error?.error?.code === "context_length_exceeded") throw new ProviderWindowExceeded();
+    if (["invalid_image","invalid_image_format","image_parse_error","invalid_image_url"].includes(error?.error?.code) ||
+        (response.status === 400 && /expected image type|could not process (?:the |this )?image/i.test(error?.error?.message ?? "")))
+      throw new AttachmentError(415,"OpenAI 无法读取图片内容，请检查图片是否可以正常打开。");
     throw new Error("Input count HTTP " + response.status);
   }
   const { input_tokens: used } = await response.json();
@@ -140,12 +143,10 @@ function wireInput(model: Model<"openai-responses">, systemPrompt:string, messag
   bindFiles(input,messages);
   return input;
 }
-function countFailure(files:Attachment[], error:unknown) {
-  return files.length && error instanceof Error && /HTTP (400|404|415|422)$/.test(error.message)
-    ? "无法统计此附件的上下文，请减少附件内容或更换文件后重试"
-    : "暂时无法核对上下文用量，请稍后重试";
+function countFailure(error:unknown) {
+  return error instanceof AttachmentError ? error.message : "暂时无法核对上下文用量，请稍后重试";
 }
-function newAgent(agentTools:AgentTool[], model: Model<"openai-responses">, settings: ModelSettings, outputs: ReplyFiles, search: WebSearch, availableIds: string[], files: Attachment[], systemPrompt: string, count: (input: unknown[], tools: unknown[], signal?:AbortSignal) => Promise<ContextUsage>,
+function newAgent(agentTools:AgentTool[], model: Model<"openai-responses">, settings: ModelSettings, outputs: ReplyFiles, search: WebSearch, availableIds: string[], systemPrompt: string, count: (input: unknown[], tools: unknown[], signal?:AbortSignal) => Promise<ContextUsage>,
     reportTier: (tier: string) => void, measured: (usage: ContextUsage) => void,
     rejectGeneration: (message: string) => void) {
   // Pi 1.5.2 has no max effort; onPayload applies the exact OpenAI setting.
@@ -171,7 +172,7 @@ function newAgent(agentTools:AgentTool[], model: Model<"openai-responses">, sett
         let usage: ContextUsage;
         try { usage = await count(input, tools, options?.signal); }
         catch (error) {
-          rejectGeneration(countFailure(files,error));
+          rejectGeneration(countFailure(error));
           throw error;
         }
         measured(usage);
@@ -253,7 +254,6 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   if (ids.length && stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
   const files = stored.filter((f): f is Attachment => !!f && f.expires > Date.now());
   if (ids.length && files.length !== ids.length) return reject(res,410,"附件已过期，请重新选择");
-  const turns = journal.contextTurns(conversation);
   const id = journal.begin(conversation,request,question,ids);
   busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
@@ -275,31 +275,38 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     cache = {input,tools,usage};
     return usage;
   }
-  const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id)];
-  const agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,files,systemPrompt,count,
-    tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
-  const stop = () => { controller.abort(); agent.abort(); };
+  let agent:Agent | undefined;
+  const stop = () => { controller.abort(); agent?.abort(); };
   // The accepted turn belongs to its request ID, including while the phone reconnects.
   const timer = setTimeout(stop, 360000);
   let partial = "";
-  const unsubscribe = agent.subscribe(event => {
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      partial += event.assistantMessageEvent.delta;
-      emit({ delta: event.assistantMessageEvent.delta });
-    }
-  });
+  let unsubscribe: (() => void) | undefined;
   const heartbeat = setInterval(() => { if (!res.destroyed) emit({pending:true}); },15000);
   const started = Date.now();
   let committed = false;
 
   try {
+    for (const file of files) {
+      try { await prepareStoredImage(journal,retention,conversation,file,baseUrl,apiKey); }
+      catch (error) { throw new ContextError(error instanceof AttachmentError ? error.message : "附件服务暂时不可用，请稍后重试"); }
+    }
+    const turns = journal.contextTurns(conversation);
+    const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id)];
+    agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,systemPrompt,count,
+      tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
+    unsubscribe = agent.subscribe(event => {
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        partial += event.assistantMessageEvent.delta;
+        emit({ delta: event.assistantMessageEvent.delta });
+      }
+    });
     const current:FileMessage = {fileRefs:files,role:"user",content:question,timestamp:Date.now()};
     const prepared = await prepareHistory(turns,async history => {
       const input = wireInput(model,systemPrompt,[...history,current]);
       try { return (await count(input,[...declared,...toolsForInput(input,availableIds)],controller.signal)).used; }
       catch (error) {
         if (error instanceof ProviderWindowExceeded) return Infinity;
-        throw new ContextError(countFailure(files,error));
+        throw new ContextError(countFailure(error));
       }
     }, prefix => summarize(model,apiKey!,prefix,controller.signal), controller.signal);
     controller.signal.throwIfAborted();
@@ -346,7 +353,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   } finally {
     clearInterval(heartbeat);
     clearTimeout(timer);
-    unsubscribe();
+    unsubscribe?.();
     busy = false;
     if (!res.destroyed) res.end();
   }

@@ -9,8 +9,21 @@ export function attachmentMime(name: string, reported: string): string | undefin
   const lower = name.trim().toLowerCase();
   const result = byExtension.get(lower.split(".").at(-1)!) ??
     (!lower.includes(".") && Object.hasOwn(formats, mime) ? mime : undefined);
-  if (mime.startsWith("image/") && mime !== result && !(mime === "image/jpg" && result === "image/jpeg")) return;
+  if (mime.startsWith("image/")) {
+    const hint = mime === "image/jpg" ? "image/jpeg" : mime;
+    return Object.hasOwn(formats,hint) ? hint : undefined;
+  }
   return result;
+}
+
+// The Android picker can supply a JPEG under a PNG name and MIME type.
+export function imageFormat(header: Buffer) {
+  if (header.subarray(0,3).equals(Buffer.from([0xff,0xd8,0xff]))) return {mime:"image/jpeg",extension:"jpg"};
+  if (header.subarray(0,8).equals(Buffer.from("89504e470d0a1a0a","hex"))) return {mime:"image/png",extension:"png"};
+  const tag = header.toString("latin1",0,6);
+  if (tag === "GIF89a" || tag === "GIF87a") return {mime:"image/gif",extension:"gif"};
+  if (header.toString("latin1",0,4) === "RIFF" && header.toString("latin1",8,12) === "WEBP")
+    return {mime:"image/webp",extension:"webp"};
 }
 
 // Walk GIF blocks, skipping colour tables, metadata and compressed image data.
