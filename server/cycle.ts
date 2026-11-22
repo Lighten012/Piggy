@@ -72,23 +72,51 @@ export class CycleStore {
     this.save(session,state);
     return state.periods.find(p=>p.start===start);
   }
+  cancel(session:string, expected:Period, target:"period"|"end", today:string) {
+    const state=this.read(session);
+    const current=state.periods.find(p=>p.start===expected.start);
+    if(!current) return {status:"not_found",start:expected.start};
+    if(current.end!==expected.end) throw new Error("这条记录已更改，请重新读取日历核对");
+    if(target==="end" && current.end===null) return {status:"no_end",start:expected.start};
+    apply(state,{kind:target==="period"?"remove":"end",start:expected.start,end:null},today);
+    this.save(session,state);
+    return {status:target==="period"?"period_removed":"end_cleared",start:expected.start};
+  }
+
 }
 export const readCycle = {name:"read_cycle_calendar",description:"读取当前用户的实际经期记录、预测设置和当地今天的日期。",
   parameters:{type:"object",properties:{},required:[],additionalProperties:false}} as const;
 export const recordPeriod = {name:"record_period",description:"按用户本轮亲述登记实际经期。start 为开始日期；只记录开始时省略 end。已存在的开始日可补录或更正结束日。",
   parameters:{type:"object",properties:{start:{type:"string",description:"YYYY-MM-DD"},end:{type:"string",description:"实际最后一天 YYYY-MM-DD"},quote:{type:"string",description:"逐字引用本条消息中描述自己实际经期的原话"}},
     required:["start","quote"],additionalProperties:false}} as const;
+export const cancelPeriod = {name:"cancel_period_record",description:"按已核对的实际开始日撤销一条经期记录，或只清除这次的实际结束日。仅在用户明确要求撤销时使用。",
+  parameters:{type:"object",properties:{
+    start:{type:"string",description:"已读取的记录开始日期 YYYY-MM-DD"},
+    target:{type:"string",enum:["period","end"],description:"period 撤销整次记录；end 只撤销实际结束日"},
+    quote:{type:"string",description:"逐字引用用户本轮要求撤销的原话"}},
+    required:["start","target","quote"],additionalProperties:false}} as const;
 export function cycleTools(store:CycleStore,session:string,question:string,today:string):AgentTool[] {
   const result=(data:unknown)=>({content:[{type:"text" as const,text:JSON.stringify(data)}],details:{}});
+  let reviewed:Period[] | undefined;
   return [
     {...readCycle,label:"查看经期日历",async execute(){
       const {length,duration,periods}=store.read(session);
+      reviewed=periods;
       return result({today,cycleDays:length,expectedPeriodDays:duration,periods});
     }},
     {...recordPeriod,label:"登记实际经期",executionMode:"sequential",async execute(_id,args){
       const {quote,start,end}=args as {quote:string;start:string;end?:string};
       if(typeof quote!=="string" || !quote.trim() || !question.includes(quote)) throw new Error("请引用用户本轮的实际经期描述");
       return result(store.record(session,start,end??undefined,today));
+    }},
+    {...cancelPeriod,label:"撤销经期记录",executionMode:"sequential",async execute(_id,args){
+      const {start,target,quote}=args as {start:string;target:"period"|"end";quote:string};
+      if(typeof quote!=="string" || !quote.trim() || !question.includes(quote)) throw new Error("请引用用户本轮要求撤销的原话");
+      if(target!=="period" && target!=="end") throw new Error("请指定撤销整次记录或仅撤销结束日");
+      if(!reviewed) throw new Error("请先读取经期日历核对实际记录");
+      const period=reviewed.find(p=>p.start===start);
+      if(!period) return result({status:"not_found",start});
+      return result(store.cancel(session,period,target,today));
     }},
   ];
 }

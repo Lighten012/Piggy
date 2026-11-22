@@ -29,3 +29,24 @@ test("tool uses the caller's calendar, requires a quote and keeps the end on dup
   assert.match(JSON.stringify(await read.execute("read",{})),/2026-11-05/);
   assert.throws(()=>store.record("a","2026-11-01","2026-10-31",today));
 });
+test("chat cancellation checks the reviewed record and scope before changing the mobile calendar",async()=>{
+  const store=new CycleStore(new DatabaseSync(":memory:")),today="2026-11-22";
+  const start="2026-11-11",quote="帮我取消11月11日开始的那次记录";
+  for(const session of ["a","b"]) store.record(session,start,"2026-11-15",today);
+  store.record("a","2026-10-11","2026-10-15",today);
+  const [read,,cancel]=cycleTools(store,"a",quote,today);
+  const args={start,target:"period",quote};
+  await assert.rejects(cancel.execute("cancel",args),/先读取/);
+  await read.execute("read",{});
+  await assert.rejects(cancel.execute("cancel",{...args,quote:"删除其他记录"}),/原话/);
+  store.record("a",start,"2026-11-16",today);
+  await assert.rejects(cancel.execute("cancel",args),/已更改/);
+  await read.execute("read",{});
+  await cancel.execute("cancel",{...args,target:"end"});
+  assert.deepEqual(store.read("a").periods[1],{start,end:null});
+  await read.execute("read",{});
+  await cancel.execute("cancel",args);
+  assert.deepEqual(store.sync("a",[],today).periods,[{start:"2026-10-11",end:"2026-10-15"}]);
+  assert.deepEqual(store.read("b").periods,[{start,end:"2026-11-15"}]);
+  assert.match(JSON.stringify(await cancel.execute("cancel",args)),/not_found/);
+});
