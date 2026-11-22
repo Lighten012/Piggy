@@ -7,9 +7,11 @@
 | 环境 | 服务端部署提交 | Android 发布版本 | 运行情况 |
 |---|---|---|---|
 | 正式 · 8888 | [15a7fab](https://github.com/Lighten012/Piggy/commit/15a7fabb840dcca49e9312e58a59a31bacc713ec) | `0.13.1`，versionCode 25 | Go、Pi 均在运行 |
-| 测试 · 8889 | [b3101d2](https://github.com/Lighten012/Piggy/commit/b3101d22c67e497dcf5634e567041ca8ed07fabf) | `0.14.0-test.3`，versionCode 37 | Go、Pi 均在运行 |
+| 测试 · 8889 | [d3422db](https://github.com/Lighten012/Piggy/commit/d3422dbc41459614ba2475e39a98b6898c2a5ab8) | `0.14.0-test.3`，versionCode 37 | Go、Pi 均在运行 |
 
 ## 已交付及验收范围
+
+- **聊天撤销经期记录。** 测试版可按实际开始日撤销指定经期，也可只清除实际结束日。使用临时 SQLite 和真实模型连续验证了只询问功能、撤销整次、只撤销结束日，并通过手机日历同步接口核对每轮结果。20 项服务端回归通过。发布后已核对测试网关和网页能力清单，沿用 Android test.3。
 
 - **聊天与经期日历联动。** 测试管理端能力清单包含 period-calendar Skill 及读取、登记工具。Android 14 模拟器从 test.2 原地更新后，直接从聊天读回旧版本地经期，真实模型登记另一段起止日期后在手机日历看到相同记录。在日历里把结束日从 6 日改为 7 日后，聊天重新查得 7 日。双列滚轮底部面板通过滑动保存验收，四种架构已核对公网下载。19 项服务端测试和 Go 网关回归通过。
 
