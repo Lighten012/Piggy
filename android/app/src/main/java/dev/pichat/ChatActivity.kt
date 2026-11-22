@@ -660,6 +660,26 @@ class ChatActivity : Activity() {
         }
     }
 
+    private var replyWait: ReplyWait? = null
+    private var chatVisible = false
+    private val refreshPhrases = object : Runnable {
+        override fun run() {
+            if (chatVisible) chat.postDelayed(this, ReplyPhrases.refresh(this@ChatActivity))
+        }
+    }
+    override fun onStart() {
+        super.onStart()
+        chatVisible = true
+        refreshPhrases.run()
+        replyWait?.visible(true)
+    }
+    override fun onStop() {
+        chatVisible = false
+        chat.removeCallbacks(refreshPhrases)
+        replyWait?.visible(false)
+        super.onStop()
+    }
+
     private var sendListener: ChatSendService.Listener? = null
 
     private fun watchSend() {
@@ -671,7 +691,11 @@ class ChatActivity : Activity() {
         showFile()
         val files = client.pendingAttachments
         bubble(client.pendingDraft, true, files)
-        val reply = bubble("", false).apply { hint = if (files.isEmpty()) "正在回复…" else "正在发送附件…" }
+        val reply = bubble("", false)
+        val indicator = ReplyWait(reply)
+        replyWait = indicator
+        indicator.visible(chatVisible)
+        indicator.show(if (files.isEmpty()) ReplyPhrases.WAITING else "正在发送附件…", false)
         toBottom()
         var source: CharSequence = ""
         var scheduled = false
@@ -684,11 +708,13 @@ class ChatActivity : Activity() {
         val observer = object : ChatSendService.Listener {
             override fun progress(partial: CharSequence, status: String, usage: ContextUsage?) {
                 source = partial
-                reply.hint = status
+                indicator.show(status, partial.isNotEmpty())
                 usage?.let(::displayUsage)
                 if (!scheduled) { scheduled = true; reply.postDelayed(render, 100) }
             }
             override fun finished(error: String?, outdated: Boolean) {
+                indicator.visible(false)
+                replyWait = null
                 reply.removeCallbacks(render)
                 ChatSendService.listener = null
                 sendListener = null

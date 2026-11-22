@@ -20,6 +20,7 @@ func fail(w http.ResponseWriter, status int, message string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+const mobileReplyPhrases = "/mobile/reply-phrases"
 const mobileChat = "/mobile/chat"
 const mobileContext = "/mobile/context"
 const mobileCycle = "/mobile/cycle"
@@ -29,7 +30,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 	expected := sha256.Sum256([]byte("piggy:" + password))
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
 		owner := "admin"
-		if pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext || pr.In.URL.Path == mobileCycle || strings.HasPrefix(pr.In.URL.Path, "/mobile/reply-files/") {
+		if pr.In.URL.Path == mobileReplyPhrases || pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext || pr.In.URL.Path == mobileCycle || strings.HasPrefix(pr.In.URL.Path, "/mobile/reply-files/") {
 			owner = "mobile"
 		}
 		pr.SetURL(target)
@@ -52,6 +53,15 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 		}
 		if strings.HasPrefix(r.URL.Path, updatePrefix) {
 			androidUpdates(updateDirectory(), w, r)
+			return
+		}
+		if r.URL.Path == mobileReplyPhrases {
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", "GET")
+				fail(w, 405, "请使用 GET")
+				return
+			}
+			proxy.ServeHTTP(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/mobile/reply-files/") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
@@ -87,8 +97,12 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			fail(w, 401, "请登录 Piggy")
 			return
 		}
-		if r.URL.Path == "/model-settings" && r.Method == http.MethodPut {
-			r.Body = http.MaxBytesReader(w, r.Body, 2048)
+		if (r.URL.Path == "/reply-phrases" || r.URL.Path == "/model-settings") && r.Method == http.MethodPut {
+			limit := int64(2048)
+			if r.URL.Path == "/reply-phrases" {
+				limit = 16384
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			proxy.ServeHTTP(w, r)
 			return
 		}

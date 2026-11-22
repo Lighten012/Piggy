@@ -164,7 +164,12 @@ test("records accepted mobile turns and restores context after restart", async t
   }
   assert.equal((await fetch(worker.base+"/capabilities")).status,401);
   assert.notEqual((await fetch(worker.base+"/capabilities",{headers:mobile})).status,200);
-  assert.deepEqual(await (await fetch(worker.base+"/capabilities",{headers:admin})).json(),{...capabilityCatalog(),models:modelChoices,active:defaultSettings});
+  assert.deepEqual(await (await fetch(worker.base+"/capabilities",{headers:admin})).json(),{...capabilityCatalog(),models:modelChoices,active:defaultSettings,replyPhrases:["小猪正在努力回复中","小猪正在为你寻找答案","Piggy 正在加油哦"]});
+  const savePhrases = (headers, value) => fetch(worker.base+"/reply-phrases",{method:"PUT",headers,body:JSON.stringify(value)});
+  assert.equal((await savePhrases(mobile,["不要写入"])).status,405);
+  assert.equal((await savePhrases(admin,[])).status,400);
+  assert.deepEqual(await (await savePhrases(admin,[" 测试短句 ","测试短句"])).json(),["测试短句"]);
+  assert.deepEqual(await (await fetch(worker.base+"/reply-phrases",{headers:mobile})).json(),["测试短句"]);
   assert.equal((await fetch(worker.base+"/history")).status,401);
   assert.notEqual((await fetch(worker.base+"/history",{headers:mobile})).status,200);
   assert.equal((await fetch(worker.base+"/chat",{method:"POST",headers:admin})).status,405);

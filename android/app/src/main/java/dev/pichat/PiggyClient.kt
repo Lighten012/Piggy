@@ -279,7 +279,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                 retryNetwork(status) { upload(file) }
                 check(prefs.edit().putString("pendingFiles",JSONArray(files).toString()).commit())
             }
-            ui { status("正在回复…") }
+            ui { status(ReplyPhrases.WAITING) }
             retryNetwork(status) { CycleSync.sync(context, true) }
             val data = JSONObject().put("timeZone", java.util.TimeZone.getDefault().id).put("text",text).put("session",session).put("request",id)
             if (files.isNotEmpty()) data.put("attachments",JSONArray(files.map { it.getString("id") }))

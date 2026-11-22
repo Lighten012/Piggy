@@ -359,18 +359,27 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     if (!res.destroyed) res.end();
   }
 }
-async function saveSettings(req: IncomingMessage, res: ServerResponse) {
+async function saveSettings(req: IncomingMessage, res: ServerResponse, phrases = false) {
   if (req.headers["content-type"]?.split(";")[0] !== "application/json") return reject(res,415,"请使用 JSON 请求");
   const parts: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 2048) return reject(res,413,"设置内容太大");
+    if (size > (phrases ? 16384 : 2048)) return reject(res,413,"设置内容太大");
     parts.push(chunk);
   }
   let settings: unknown;
   try { settings = JSON.parse(Buffer.concat(parts).toString()); }
   catch { return reject(res,400,"设置格式有误"); }
+  if (phrases) {
+    if (!Array.isArray(settings) || settings.length < 1 || settings.length > 48 ||
+        !settings.every(s => typeof s === "string" && s.trim() && [...s.trim()].length <= 48 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(s)))
+      return reject(res,400,"请填写 1 至 48 条短句，每条最多 48 个字符");
+    const list = [...new Set<string>(settings.map(s => s.trim()))];
+    journal.saveReplyPhrases(list);
+    res.writeHead(200,{"Content-Type":"application/json"});
+    return res.end(JSON.stringify(list));
+  }
   if (!validSettings(settings)) return reject(res,400,"此模型、思考强度或速度组合不可用");
   journal.saveModelSettings(settings);
   res.writeHead(200,{"Content-Type":"application/json"});
@@ -399,8 +408,19 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === "/capabilities" && req.headers["x-piggy-owner"] === "admin" &&
       (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, {"Content-Type":"application/json"});
-    res.end(req.method === "HEAD" ? undefined : JSON.stringify({...capabilityCatalog(), models:modelChoices, active:activeSettings()}));
+    res.end(req.method === "HEAD" ? undefined : JSON.stringify({...capabilityCatalog(), models:modelChoices, active:activeSettings(), replyPhrases:journal.replyPhrases()}));
     return;
+  }
+  if (url.pathname === "/reply-phrases") {
+    if (req.headers["x-piggy-owner"] === "mobile" && req.method === "GET") {
+      res.writeHead(200,{"Content-Type":"application/json"});
+      return res.end(JSON.stringify(journal.replyPhrases()));
+    }
+    if (req.headers["x-piggy-owner"] === "admin" && req.method === "PUT") {
+      void saveSettings(req,res,true).catch(() => reject(res,500,"短句未保存，请重试"));
+      return;
+    }
+    return reject(res,405,"不支持此操作");
   }
   if (url.pathname === "/model-settings" && req.headers["x-piggy-owner"] === "admin" && req.method === "PUT") {
     void saveSettings(req,res).catch(() => reject(res,500,"模型设置未保存，请重试"));

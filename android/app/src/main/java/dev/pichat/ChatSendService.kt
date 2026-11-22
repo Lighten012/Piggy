@@ -64,7 +64,7 @@ class ChatSendService : Service() {
         }
         running = id
         partial.clear()
-        status = if (client.pendingAttachments.isEmpty()) "正在回复…" else "正在发送附件…"
+        status = if (client.pendingAttachments.isEmpty()) ReplyPhrases.WAITING else "正在发送附件…"
         usage = null
         outdated = false
         notifyProgress()

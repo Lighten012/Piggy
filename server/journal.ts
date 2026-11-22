@@ -35,6 +35,9 @@ export class Journal {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA journal_mode=WAL;
+      CREATE TABLE IF NOT EXISTS reply_phrases (
+        id INTEGER PRIMARY KEY CHECK(id=1), phrases TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS model_settings (
         id INTEGER PRIMARY KEY CHECK(id=1), model TEXT NOT NULL, effort TEXT NOT NULL, tier TEXT NOT NULL
       );
@@ -80,6 +83,14 @@ export class Journal {
       this.db.exec("ALTER TABLE active_context ADD COLUMN output_files TEXT");
   }
 
+  replyPhrases(): string[] {
+    const row=this.db.prepare("SELECT phrases FROM reply_phrases WHERE id=1").get();
+    return row ? JSON.parse(String(row.phrases)) : ["小猪正在努力回复中","小猪正在为你寻找答案","Piggy 正在加油哦"];
+  }
+  saveReplyPhrases(phrases:string[]) {
+    this.db.prepare("INSERT INTO reply_phrases VALUES(1,?) ON CONFLICT(id) DO UPDATE SET phrases=excluded.phrases")
+      .run(JSON.stringify(phrases));
+  }
   modelSettings(): ModelSettings | undefined {
     return this.db.prepare("SELECT model,effort,tier FROM model_settings WHERE id=1").get() as ModelSettings | undefined;
   }

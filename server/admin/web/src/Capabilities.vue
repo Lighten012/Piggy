@@ -12,6 +12,25 @@ const draft = ref(null);
 const saving = ref(false);
 const feedback = ref("");
 const saveError = ref(false);
+const phrases = ref("");
+const savingPhrases = ref(false);
+const phraseFeedback = ref("");
+const phraseList = computed(() => phrases.value.split("\n").map(s => s.trim()).filter(Boolean));
+const phrasesChanged = computed(() => catalog.value && JSON.stringify(phraseList.value) !== JSON.stringify(catalog.value.replyPhrases));
+async function savePhrases() {
+  savingPhrases.value = true;
+  phraseFeedback.value = "";
+  try {
+    const res = await fetch("/reply-phrases",{method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(phraseList.value),signal:controller.signal});
+    if (!res.ok) throw new Error(res.status === 400 ? "请填写 1 至 48 条短句，每条最多 48 个字符。" : "保存失败，请重试。");
+    catalog.value.replyPhrases = await res.json();
+    phrases.value = catalog.value.replyPhrases.join("\n");
+    phraseFeedback.value = "已保存，手机下次同步后生效。";
+  } catch (e) {
+    if (e.name !== "AbortError") phraseFeedback.value = e.message;
+  } finally { savingPhrases.value = false; }
+}
 const effortLabels = {off:"关闭",low:"低",medium:"中",high:"高",xhigh:"极高",max:"最高"};
 const tierLabels = {default:"标准",priority:"快速 · Fast",ultrafast:"极速 · Ultrafast"};
 const choice = computed(() => catalog.value?.models.find(m => m.id === draft.value?.model));
@@ -47,6 +66,8 @@ async function reload() {
     const data = await response.json();
     if (!Array.isArray(data.skills) || !Array.isArray(data.tools)) throw new Error("能力清单格式有误");
     catalog.value = data;
+    phrases.value = data.replyPhrases.join("\n");
+    phraseFeedback.value = "";
     draft.value = {...data.active};
     feedback.value = "";
   } catch (e) {
@@ -60,7 +81,7 @@ onUnmounted(() => controller.abort());
 </script>
 <template>
   <main class="catalog">
-    <div class="heading"><h1>Agent 能力</h1><button type="button" class="reload" :disabled="loading || saving" @click="reload">刷新</button></div>
+    <div class="heading"><h1>Agent 能力</h1><button type="button" class="reload" :disabled="loading || saving || savingPhrases || phrasesChanged || dirty" @click="reload">刷新</button></div>
     <p v-if="error" role="alert" class="alert">{{ error }}</p>
     <p v-if="loading" role="status">正在读取能力清单…</p>
     <template v-if="catalog">
@@ -83,6 +104,17 @@ onUnmounted(() => controller.abort());
           <div class="save-row">
             <button class="save" :disabled="!dirty || saving || loading">{{ saving ? "正在保存…" : "保存设置" }}</button>
             <span role="status" :class="{problem:saveError}">{{ feedback }}</span>
+          </div>
+        </form>
+      </section>
+      <section aria-labelledby="phrases-title">
+        <h2 id="phrases-title">回复等待短句</h2>
+        <form @submit.prevent="savePhrases">
+          <label for="phrases" class="phrase-label">每行一句，按顺序轮播</label>
+          <textarea id="phrases" v-model="phrases" rows="4" :disabled="savingPhrases || loading" @input="phraseFeedback = ''"></textarea>
+          <div class="save-row">
+            <button class="save" :disabled="!phrasesChanged || savingPhrases || loading">{{ savingPhrases ? "正在保存…" : "保存短句" }}</button>
+            <span role="status">{{ phraseFeedback }}</span>
           </div>
         </form>
       </section>
@@ -117,6 +149,8 @@ select {font:inherit;color:inherit;border:1px solid #d8c3c8;border-radius:10px;b
 .save-row {display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:16px;font-size:.9rem}
 .save {border:0;border-radius:20px;min-height:44px;padding:0 20px;background:var(--berry);color:white;font:inherit;cursor:pointer}
 .save:disabled {background:#efe8e9;color:#695b60;cursor:default}
+.phrase-label {display:block;margin:14px 0 6px}
+textarea {box-sizing:border-box;width:100%;resize:vertical;border:1px solid #d8c3c8;border-radius:10px;padding:10px 12px;font:inherit;color:inherit;line-height:1.6}
 .problem {color:#9a333f}
 @media(max-width:640px){fieldset {grid-template-columns:1fr}}
 .reload:disabled {opacity:.6}
