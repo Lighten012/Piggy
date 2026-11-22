@@ -7,9 +7,11 @@
 | 环境 | 服务端部署提交 | Android 发布版本 | 运行情况 |
 |---|---|---|---|
 | 正式 · 8888 | [fd89327](https://github.com/Lighten012/Piggy/commit/fd89327b43d92f31ae4076bb27a001c2cce6fb31) | `0.13.0`，versionCode 24 | Go、Pi 均在运行 |
-| 测试 · 8889 | [ecf953a](https://github.com/Lighten012/Piggy/commit/ecf953a25f3aaca16990be72f2d23126a81d952c) | `0.13.1-test.5`，versionCode 34 | Go、Pi 均在运行 |
+| 测试 · 8889 | [b9b5284](https://github.com/Lighten012/Piggy/commit/b9b5284a95d021ed5a4117e8c72f27fa4348908a) | `0.13.1-test.5`，versionCode 34 | Go、Pi 均在运行 |
 
 ## 已交付及验收范围
+
+- **测试版图片上传与旧草稿重试。** 服务端读取图片文件头，给 OpenAI 发送与实际格式一致的小写后缀和 MIME，聊天记录保留原名。旧草稿重试时按附件编号取回七天内的原图，按需更新云端文件引用并沿用原到期时间。17 项服务端回归通过。在隔离会话复用原先失败的 491,768 字节附件和原问题，OpenAI 收到 JPEG，完成计数并返回文本回复。
 
 - **vivo 后台耗电管理入口修正。** 按维护者在 S50 Pro mini（OriginOS 6）看到的文案，引导从「智能控制后台耗电」改选「允许后台耗电」。在另一款 vivo 系统镜像的电池组件中核对了公开列表 action、中文标题及选项文字。OPPO 单独按 ColorOS 手册引导。Android 14 模拟器验证两品牌缺少厂商页面时会先给出路径，用户可取消或继续；通用电池页通过回归。四种架构公网校验通过，ARM64 从 test.4 应用内升级成功。目标 vivo 手机的实际直达效果待真机验证。
 
