@@ -7,9 +7,11 @@
 | 环境 | 服务端部署提交 | Android 发布版本 | 运行情况 |
 |---|---|---|---|
 | 正式 · 8888 | [15a7fab](https://github.com/Lighten012/Piggy/commit/15a7fabb840dcca49e9312e58a59a31bacc713ec) | `0.13.1`，versionCode 25 | Go、Pi 均在运行 |
-| 测试 · 8889 | [d3f90ab](https://github.com/Lighten012/Piggy/commit/d3f90ab7d700dfaa1d5c3f17be36cddaf11f61e1) | `0.14.0-test.3`，versionCode 37 | Go、Pi 均在运行 |
+| 测试 · 8889 | [5b64287](https://github.com/Lighten012/Piggy/commit/5b642877349e35f353e22a3b43067473fa342bf0) | `0.14.0-test.4`，versionCode 38 | Go、Pi 均在运行 |
 
 ## 已交付及验收范围
+
+- **聊天等待提示。** 测试管理端可维护按顺序轮播的回复短句。浏览器验收覆盖编辑、保存与重新加载。Android 14 隔离验收验证自定义短句切换、三个圆点的逐帧变化、回复完成后移除提示，以及同步返回 503 后重启仍使用旧列表。已检查四架构公网更新，在 ARM64 模拟器从 test.3 应用内升级至 test.4。
 
 - **经期日历聊天增删查改。** 测试版支持直接更正实际开始日和结束日，也能调整周期间隔与预计持续天数。在隔离日历用真实模型连续完成登记、更正开始日、修改两项设置、查询与删除，逐轮核对手机同步结果。22 项服务端测试通过，测试网关与管理端能力清单已核对，沿用 Android test.3。
 
