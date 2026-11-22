@@ -23,25 +23,35 @@ internal object CivilDay {
 }
 
 internal data class CycleDay(val position: Int, val recorded: Boolean, val period: Boolean,
-                             val ovulation: Boolean, val fertile: Boolean, val phase: String?)
+                             val ovulation: Boolean, val fertile: Boolean, val phase: String?,
+                             val anchor: Int, val actualEnd: Int?, val confirmed: Boolean,
+                             val predictedEnd: Int?)
 
-internal class CycleCalendar(val starts: Set<Int>, val length: Int, val duration: Int) {
+internal class CycleCalendar(val starts: Set<Int>, val length: Int, val duration: Int,
+                             val ends: Map<Int, Int> = emptyMap()) {
     fun on(day: Int): CycleDay? {
         val anchor = starts.filter { it <= day }.maxOrNull() ?: return null
         val next = starts.filter { it > day }.minOrNull()
         val elapsed = day - anchor
         // A recorded next start closes the interval. Never invent intervening periods.
-        val index = if (next == null) elapsed % length else elapsed
+        val end = ends[anchor]
+        val projectedStart = day - elapsed % length
+        val start = if (next != null || (end != null && projectedStart <= end)) anchor else projectedStart
+        val index = day - start
+        val confirmed = end != null && day <= end
+        val predictedEnd = if (start == anchor && end != null) null
+            else minOf(start + duration - 1, next?.minus(1) ?: Int.MAX_VALUE)
+        val period = confirmed || (predictedEnd != null && day <= predictedEnd)
         val span = next?.minus(anchor) ?: length
         val ovulationIndex = span - 15 // cycle day (length - 14), with day one at index zero
-        val estimate = span in 21..35
+        val estimate = span in 21..35 && index < span
         val phase = when {
             !estimate -> null
             index < ovulationIndex -> "卵泡期"
             index == ovulationIndex -> "排卵日"
             else -> "黄体期"
         }
-        return CycleDay(index + 1, day == anchor, index < duration,
-            estimate && index == ovulationIndex, estimate && index in ovulationIndex - 5..ovulationIndex + 1, phase)
+        return CycleDay(index + 1, day == anchor, period,
+            estimate && index == ovulationIndex, estimate && index in ovulationIndex - 5..ovulationIndex + 1, phase, anchor, end, confirmed, predictedEnd)
     }
 }

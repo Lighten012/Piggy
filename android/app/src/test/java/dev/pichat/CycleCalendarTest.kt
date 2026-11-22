@@ -32,4 +32,28 @@ class CycleCalendarTest {
         assertNull(CycleCalendar(emptySet(), 28, 5).on(first))
         assertNull(CycleCalendar(setOf(first), 42, 5).on(first + 27)!!.phase)
     }
+
+    @Test fun actualEndOverridesOnlyItsOwnPeriod() {
+        for (days in listOf(1, 3, 8)) {
+            val end = first + days - 1
+            val model = CycleCalendar(setOf(first), 28, 5, mapOf(first to end))
+            for (offset in 0 until days) assertTrue(model.on(first + offset)!!.confirmed)
+            assertFalse(model.on(end + 1)!!.period)
+            assertNull(model.on(first)!!.predictedEnd)
+            assertEquals(first + 32, model.on(first + 28)!!.predictedEnd)
+            assertFalse(model.on(first + 28)!!.confirmed)
+        }
+        val old = CycleCalendar(setOf(first), 28, 5)
+        assertEquals(first + 4, old.on(first)!!.predictedEnd)
+        val revised = CycleCalendar(setOf(first, first + 30), 28, 7, mapOf(first to first + 3))
+        assertFalse(revised.on(first + 4)!!.period)
+        assertEquals(first + 36, revised.on(first + 30)!!.predictedEnd)
+    }
+    @Test fun extendedPeriodTakesPrecedenceOverProjectedStart() {
+        val model = CycleCalendar(setOf(first), 21, 5, mapOf(first to first + 22))
+        assertEquals(23, model.on(first + 22)!!.position)
+        assertTrue(model.on(first + 22)!!.confirmed)
+        assertFalse(model.on(first + 23)!!.period)
+        assertTrue(model.on(first + 42)!!.period)
+    }
 }
