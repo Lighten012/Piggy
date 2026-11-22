@@ -94,6 +94,8 @@ export class Journal {
         ) old WHERE old.key=f.key;
         COMMIT`);
     }
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('reply_files') WHERE name='inline_at'").get())
+      this.db.exec("ALTER TABLE reply_files ADD COLUMN inline_at INTEGER");
     for(const row of this.db.prepare("SELECT id FROM turns WHERE status='pending'").all())
       this.finishInterrupted(Number(row.id),"");
 
@@ -187,7 +189,7 @@ export class Journal {
     this.db.prepare("DELETE FROM local_files WHERE until<=?").run(now);
   }
   replyFiles(turn: number | bigint) {
-    return this.db.prepare("SELECT key,name,mime,size,until FROM reply_files WHERE turn_id=? ORDER BY position")
+    return this.db.prepare("SELECT key,name,mime,size,until,inline_at AS inlineAt FROM reply_files WHERE turn_id=? ORDER BY position")
       .all(turn).map(row => ({...row,preview:previewType(String(row.mime))}));
   }
   archivedOutputs(turn:number) {
@@ -272,8 +274,8 @@ export class Journal {
       if (!turn) throw new Error("Turn is no longer pending");
       this.db.prepare("DELETE FROM operation_receipts WHERE turn_id=?").run(id);
       if (replacement) this.replacePrefix(String(turn.conversation),replacement);
-      const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until,remote) VALUES(?,?,?,?,?,?,?,?)");
-      outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until,f.remote));
+      const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until,remote,inline_at) VALUES(?,?,?,?,?,?,?,?,?)");
+      outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until,f.remote,f.inlineAt??null));
       this.db.prepare("INSERT INTO active_context(conversation,messages,files,output_files) VALUES(?,?,?,?)")
         .run(turn.conversation,JSON.stringify(messages.map(({fileRefs, ...message}:ContextMessage) => message)),files.length ? JSON.stringify(files) : null,outputs.length ? JSON.stringify(outputs) : null);
       this.db.exec("COMMIT");

@@ -362,37 +362,36 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         }
     }
 
-    fun fetchReply(file: JSONObject, target: Uri?, finished: (Uri?, String?) -> Unit) = downloads.execute {
-        val result = runCatching {
-            pruneDownloads()
-            check(file.getLong("until") > System.currentTimeMillis()) { "附件已过期" }
-            val key = file.getString("key")
-            require(key.matches(Regex("[0-9]{13}-[a-f0-9-]{36}")))
-            val directory = java.io.File(downloadDir, key)
-            directory.mkdirs()
-            val name = file.getString("name").substringAfterLast('/').substringAfterLast('\\')
-            val cached = java.io.File(directory, name.takeUnless { it.isBlank() || it == "." || it == ".." } ?: "附件")
-            if (!cached.isFile) {
-                val temp = java.io.File.createTempFile("download-", ".part", directory)
-                val http = PiggyServer.url("/mobile/reply-files/$session/$key").openConnection() as HttpsURLConnection
-                try {
-                    http.connectTimeout = 15000
-                    http.readTimeout = 60000
-                    http.instanceFollowRedirects = false
-                    check(http.responseCode == 200) { if (http.responseCode == 404) "附件已过期或不存在" else "下载失败，请重试" }
-                    val size = temp.outputStream().use { out -> http.inputStream.use { it.copyTo(out) } }
-                    check(size == file.getLong("size") && temp.renameTo(cached)) { "文件下载不完整，请重试" }
-                } finally {
-                    http.disconnect()
-                    temp.delete()
-                }
+    // Accessed by the preview and the background export worker.
+    internal fun cachedReply(file: JSONObject): Uri {
+        pruneDownloads()
+        check(file.getLong("until") > System.currentTimeMillis()) { "附件已过期" }
+        val key = file.getString("key")
+        require(key.matches(Regex("[0-9]{13}-[a-f0-9-]{36}")))
+        val directory = java.io.File(downloadDir, key)
+        directory.mkdirs()
+        val name = file.getString("name").substringAfterLast('/').substringAfterLast('\\')
+        val cached = java.io.File(directory, name.takeUnless { it.isBlank() || it == "." || it == ".." } ?: "附件")
+        if (!cached.isFile) {
+            val temp = java.io.File.createTempFile("download-", ".part", directory)
+            val http = PiggyServer.url("/mobile/reply-files/$session/$key").openConnection() as HttpsURLConnection
+            try {
+                http.connectTimeout = 15000
+                http.readTimeout = 60000
+                http.instanceFollowRedirects = false
+                check(http.responseCode == 200) { if (http.responseCode == 404) "附件已过期或不存在" else "下载失败，请重试" }
+                val size = temp.outputStream().use { out -> http.inputStream.use { it.copyTo(out) } }
+                check(size == file.getLong("size") && temp.renameTo(cached)) { "文件下载不完整，请重试" }
+            } finally {
+                http.disconnect()
+                temp.delete()
             }
-            if (target != null) {
-                val stream = context.contentResolver.openOutputStream(target, "wt") ?: throw IOException("无法保存文件")
-                stream.use { out -> cached.inputStream().use { it.copyTo(out) } }
-                target
-            } else androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".updates", cached)
         }
+        return androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".updates", cached)
+    }
+
+    fun fetchReply(file: JSONObject, finished: (Uri?, String?) -> Unit) = downloads.execute {
+        val result = runCatching { cachedReply(file) }
         ui { finished(result.getOrNull(), result.exceptionOrNull()?.localizedMessage) }
     }
 

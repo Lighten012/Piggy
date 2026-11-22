@@ -7,7 +7,7 @@ import { contextLimit, ContextError, prepareHistory, summarize } from "./compact
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { AttachmentError, prepareStoredImage, restoreOutputReference, receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
-import { ReplyFiles, replyText } from "./reply-files.ts";
+import { ReplyFiles } from "./reply-files.ts";
 import { responseTools } from "./hosted-tools.ts";
 import { WebSearch } from "./web-search.ts";
 import { Retention } from "./retention.ts";
@@ -347,8 +347,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     }
     for (const part of last.content) if (part.type === "text") part.text = search.render(part.text);
     const text = last.content.filter(part => part.type === "text").map(part => part.text).join("");
-    await outputs.deliver(text,controller.signal);
-    const answer = replyText(text,outputs.files);
+    const answer = await outputs.deliver(text,controller.signal);
     if (!answer.trim()) throw new Error("Model returned no visible reply");
     if (outputs.files.length) {
       last.content = [...last.content.filter(part => part.type !== "text"), {type:"text",

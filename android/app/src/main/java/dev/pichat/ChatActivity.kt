@@ -28,6 +28,7 @@ import io.noties.markwon.ext.tables.TableAwareMovementMethod
 import io.noties.markwon.ext.tables.TableRowSpan
 
 class ChatActivity : Activity() {
+    private val saver by lazy { AttachmentSaver(this, client) }
     private val markdown by lazy { chatMarkdown(this) }
     private lateinit var menu: ImageButton
     private var drawer: Dialog? = null
@@ -236,6 +237,7 @@ class ChatActivity : Activity() {
         root.addView(gate, LinearLayout.LayoutParams(match, 0, 1f))
         setContentView(root)
         client = PiggyClient(this) { updater.check() }
+        saver.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
         client.lastUsage?.let(contextMeter::update)
         updater = AppUpdater(this, ::showVersion)
         renderHistory()
@@ -327,6 +329,16 @@ class ChatActivity : Activity() {
         dialog.show()
     }
 
+    override fun onSaveInstanceState(out: Bundle) {
+        super.onSaveInstanceState(out)
+        saver.awaitingPermission?.let { out.putString("savingAttachment", it.toString()) }
+    }
+
+    override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(request, permissions, results)
+        saver.onPermissionResult(request, results)
+    }
+
     override fun onConfigurationChanged(config: android.content.res.Configuration) {
         super.onConfigurationChanged(config)
         drawer?.window?.setLayout(drawerWidth(), match)
@@ -365,6 +377,7 @@ class ChatActivity : Activity() {
         isFocusable = true
         scaleType = ImageView.ScaleType.CENTER_CROP
         setOnClickListener { openFile(file) }
+        setOnLongClickListener { saver.save(file); true }
         ImagePreviews.display(this, image, file.getString("name"))
     }
 
@@ -375,6 +388,7 @@ class ChatActivity : Activity() {
         contentDescription = "打开附件，" + file.getString("name")
         isFocusable = true
         setOnClickListener { openFile(file) }
+        setOnLongClickListener { saver.save(file); true }
         addView(ImageView(this@ChatActivity).apply {
             setImageResource(R.drawable.attachment_document)
             background = shape(Color.rgb(240, 233, 247), 10)
@@ -549,9 +563,11 @@ class ChatActivity : Activity() {
             background = shape(if (user) lavender else Color.WHITE, 20, !user)
             setPadding(dp(5),dp(5),dp(5),dp(5))
             row.addView(this,width,wrap)
+        }
+        fun LinearLayout.addAttachments(batch: List<JSONObject>) {
             var index = 0
-            while (index < files.size) {
-                val file = files[index++]
+            while (index < batch.size) {
+                val file = batch[index++]
                 val image = if (expired(file)) null else ImagePreviews.source(file)
                 val item: View
                 val height: Int
@@ -562,7 +578,7 @@ class ChatActivity : Activity() {
                         photos.addView(photoTile(f,local),LinearLayout.LayoutParams(0,match,1f).apply { leftMargin = dp(gap) })
                     }
                     addPhoto(file,image,0)
-                    val next = files.getOrNull(index)
+                    val next = batch.getOrNull(index)
                     val nextImage = next?.takeUnless(::expired)?.let { ImagePreviews.source(it) }
                     if (next != null && nextImage != null) {
                         addPhoto(next,nextImage,4)
@@ -582,7 +598,7 @@ class ChatActivity : Activity() {
                 addView(item, LinearLayout.LayoutParams(match,height).apply { topMargin = if (childCount == 0) 0 else dp(4) })
             }
         }
-        val view = text("", 16f, ink).apply {
+        fun messageView() = text("", 16f, ink).apply {
             setTextIsSelectable(true)
             movementMethod = TableAwareMovementMethod.create()
             setLinkTextColor(plum)
@@ -591,8 +607,25 @@ class ChatActivity : Activity() {
             if (files.isEmpty()) background = shape(if (user) lavender else Color.WHITE, 20, !user)
             maxWidth = (resources.displayMetrics.widthPixels * .81f).toInt()
         }
-        if (value.isNotEmpty()) renderMessage(view, value)
-        if (files.isEmpty() || value.isNotEmpty()) group.addView(view, if (files.isEmpty()) wrap else match, wrap)
+        val view = messageView()
+        if (user || files.isEmpty()) {
+            group.addAttachments(files)
+            if (value.isNotEmpty()) renderMessage(view, value)
+            if (files.isEmpty() || value.isNotEmpty()) group.addView(view, if (files.isEmpty()) wrap else match, wrap)
+        } else {
+            val anchors = replyPositions(value, files.map { it.optInt("inlineAt", -1) })
+            var cursor = 0
+            fun addProse(end: Int) {
+                val part = value.substring(cursor, end).trim('\n','\r')
+                if (part.isNotBlank()) group.addView(messageView().also { renderMessage(it, part) }, match, wrap)
+                cursor = end
+            }
+            for ((offset, items) in files.indices.groupBy { anchors[it] }.toSortedMap()) {
+                addProse(offset)
+                group.addAttachments(items.map { files[it] })
+            }
+            addProse(value.length)
+        }
         transcript.addView(row, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(15) })
         return view
     }

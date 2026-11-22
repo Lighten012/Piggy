@@ -34,6 +34,7 @@ import org.json.JSONObject
 
 class PreviewActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
+    private val saver by lazy { AttachmentSaver(this, client) }
     private val markdown by lazy { chatMarkdown(this) }
     private lateinit var client: PiggyClient
     private lateinit var info: JSONObject
@@ -95,6 +96,7 @@ class PreviewActivity : Activity() {
         info = JSONObject(requireNotNull(intent.getStringExtra("file")))
         index = state?.getInt("page") ?: 0
         client = PiggyClient(this) {}
+        saver.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
         temp =
             File.createTempFile("reader-", ".tmp", cacheDir).apply {
                 delete()
@@ -163,7 +165,7 @@ class PreviewActivity : Activity() {
             return
         }
         if (info.has("key"))
-            client.fetchReply(info, null) { uri, error ->
+            client.fetchReply(info) { uri, error ->
                 if (uri == null) status(error ?: "下载失败") else prepare(uri)
             }
         else prepare(Uri.parse(info.getString("uri")))
@@ -171,6 +173,7 @@ class PreviewActivity : Activity() {
 
     override fun onSaveInstanceState(out: Bundle) {
         super.onSaveInstanceState(out)
+        saver.awaitingPermission?.let { out.putString("savingAttachment", it.toString()) }
         out.putInt("page", index)
     }
 
@@ -517,6 +520,7 @@ class PreviewActivity : Activity() {
     private fun showBrowser(mode: String, kind: String) {
         val sheet = mode == "sheet"
         val web = WebView(this)
+        if (!sheet) web.setOnLongClickListener { saver.save(info); true }
         browser = web
         web.settings.apply {
             javaScriptEnabled = sheet
@@ -599,14 +603,8 @@ class PreviewActivity : Activity() {
     private fun fileMenu() {
         val uri = original ?: return
         PopupMenu(this, more).apply {
-            menu.add("保存到手机").setOnMenuItemClickListener {
-                startActivityForResult(
-                    Intent(Intent.ACTION_CREATE_DOCUMENT)
-                        .addCategory(Intent.CATEGORY_OPENABLE)
-                        .setType(mime)
-                        .putExtra(Intent.EXTRA_TITLE, name),
-                    21,
-                )
+            menu.add(saver.label(info)).setOnMenuItemClickListener {
+                saver.save(info)
                 true
             }
             menu.add("用其他应用打开").setOnMenuItemClickListener {
@@ -626,17 +624,9 @@ class PreviewActivity : Activity() {
         }
     }
 
-    override fun onActivityResult(request: Int, result: Int, data: Intent?) {
-        super.onActivityResult(request, result, data)
-        val dest = data?.data ?: return
-        if (request == 21 && result == RESULT_OK && until > System.currentTimeMillis())
-            background {
-                val src = original ?: throw IOException("原文件不可用")
-                contentResolver.openInputStream(src)!!.use { i ->
-                    contentResolver.openOutputStream(dest, "wt")!!.use { o -> i.copyTo(o) }
-                }
-                onScreen { Toast.makeText(this, "文件已保存", Toast.LENGTH_SHORT).show() }
-            }
+    override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(request, permissions, results)
+        saver.onPermissionResult(request, results)
     }
 
     override fun onDestroy() {

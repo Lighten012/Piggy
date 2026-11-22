@@ -6,7 +6,7 @@ import { attachmentMime } from "./attachment-format.ts";
 import { Retention, week } from "./retention.ts";
 
 export interface ReplyFile {
-  key: string; name: string; mime: string; size: number; until: number; remote: string;
+  key: string; name: string; mime: string; size: number; until: number; remote: string; inlineAt?: number;
 }
 type Citation = {type:string; filename?:string; file_id?:string; container_id?:string; start_index:number; end_index:number};
 type FileSource = {filename:string; container_id:string; file_id:string};
@@ -60,14 +60,18 @@ export class ReplyFiles {
 
   async deliver(text:string, signal?:AbortSignal) {
     // A download needs both a final Markdown link and the provider citation covering that exact URL.
-    for (const match of text.matchAll(/!?\[[^\]]*\]\(<?(sandbox:\/mnt\/data\/deliverables\/(?:[^()<>\n]|\([^()\n]*\))+)>?\)/g)) {
-      const ref = this.references.get(match[1]);
+    const sourceText=text.trimStart();
+    let answer="", cursor=0;
+    for (const match of sourceText.matchAll(/!?\[([^\]]*)\]\(<?(sandbox:\/mnt\/data\/deliverables\/(?:[^()<>\n]|\([^()\n]*\))+)>?\)/g)) {
+      answer+=sourceText.slice(cursor,match.index)+match[1];
+      cursor=match.index+match[0].length;
+      const ref = this.references.get(match[2]);
       if (!ref) throw new Error("无法核对成品文件的引用，请重试。");
       const source = [ref.container_id,ref.file_id];
       if (!source.every(id => /^[a-zA-Z0-9_-]+$/.test(id))) throw new Error("生成文件的引用无效");
       const identity = source.join("/");
       if (this.seen.has(identity)) continue;
-      await this.save(ref.filename, signal, async path => {
+      const file=await this.save(ref.filename, signal, async path => {
         const response = await fetch(this.base+"/containers/"+source[0]+"/files/"+source[1]+"/content", {
           headers:{authorization:"Bearer "+this.apiKey},signal,redirect:"error",
         });
@@ -75,8 +79,19 @@ export class ReplyFiles {
         const file = await open(path,"wx",0o600);
         try { await file.writeFile(response.body as AsyncIterable<Uint8Array>); } finally { await file.close(); }
       });
+      file.inlineAt=answer.length;
       this.seen.add(identity);
     }
+    if (!this.files.length) return text;
+    const clean=(answer+sourceText.slice(cursor)).trimEnd();
+    for (const file of this.files) {
+      if (file.inlineAt===undefined) continue;
+      const offset=Math.min(file.inlineAt,clean.length);
+      // Keep closing emphasis and sentence punctuation with a standalone caption.
+      const suffix=clean.slice(offset).match(/^[*_~。！？：:.,，、;；!？? )）】]*?(?=\r?\n|$)/)?.[0] ?? "";
+      file.inlineAt=offset+suffix.length;
+    }
+    return clean || "已生成附件。";
   }
 
   private async save(filename: string, signal: AbortSignal | undefined, write:(path:string)=>Promise<void>) {
@@ -99,15 +114,10 @@ export class ReplyFiles {
       const remote = (await response.json()).id;
       if (typeof remote !== "string" || !remote) throw new Error("生成文件缺少引用");
       const copy = await this.archive.keep(path);
-      this.files.push({...copy,name,mime,size,remote});
+      const file:ReplyFile={...copy,name,mime,size,remote};
+      this.files.push(file);
+      return file;
     } finally { await rm(dir,{recursive:true,force:true}); }
   }
   async discard() { await Promise.all(this.files.map(file => this.archive.remove(file.key))); }
-}
-
-export function replyText(text: string, files: ReplyFile[]) {
-  if (!files.length) return text;
-  // Native attachments replace the temporary links to the interpreter's sandbox.
-  const clean = text.replace(/!?\[([^\]]*)\]\(sandbox:[^)]+\)/gi,"$1").trim();
-  return clean || "已生成附件。";
 }
