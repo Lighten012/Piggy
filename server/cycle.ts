@@ -72,6 +72,29 @@ export class CycleStore {
     this.save(session,state);
     return state.periods.find(p=>p.start===start);
   }
+  updatePeriod(session:string, expected:Period, newStart:string|undefined, newEnd:string|undefined, today:string) {
+    if(newStart===undefined && newEnd===undefined) throw new Error("请提供要更正的开始日或结束日");
+    const state=this.read(session);
+    const index=state.periods.findIndex(p=>p.start===expected.start);
+    if(index<0 || state.periods[index].end!==expected.end) throw new Error("记录已变化，请重新读取日历核对");
+    const start=newStart===undefined ? expected.start : newStart;
+    const end=newEnd===undefined ? expected.end : newEnd;
+    if(start!==expected.start && state.periods.some(p=>p.start===start)) throw new Error("目标开始日已有另一条记录");
+    // Validate against the remaining records; persist the replacement only after all checks pass.
+    state.periods.splice(index,1);
+    apply(state,{kind:"period",start,end},today);
+    this.save(session,state);
+    return {start,end};
+  }
+  updateSettings(session:string, length:number|undefined, duration:number|undefined, expected:CalendarData, today:string) {
+    if(length===undefined && duration===undefined) throw new Error("请提供要调整的周期或持续天数");
+    const state=this.read(session);
+    if((length!==undefined && state.length!==expected.length) || (duration!==undefined && state.duration!==expected.duration))
+      throw new Error("周期设置已变化，请重新读取日历核对");
+    apply(state,{kind:"settings",length:length===undefined?state.length:length,duration:duration===undefined?state.duration:duration},today);
+    this.save(session,state);
+    return {cycleDays:state.length,expectedPeriodDays:state.duration};
+  }
   cancel(session:string, expected:Period, target:"period"|"end", today:string) {
     const state=this.read(session);
     const current=state.periods.find(p=>p.start===expected.start);
@@ -95,28 +118,60 @@ export const cancelPeriod = {name:"cancel_period_record",description:"按已核�
     target:{type:"string",enum:["period","end"],description:"period 撤销整次记录；end 只撤销实际结束日"},
     quote:{type:"string",description:"逐字引用用户本轮要求撤销的原话"}},
     required:["start","target","quote"],additionalProperties:false}} as const;
+export const updatePeriod = {name:"update_period_record",description:"按旧开始日找到一次实际经期，更正开始日、结束日或同时更正两者。省略的日期保留原值。",
+  parameters:{type:"object",properties:{
+    start:{type:"string",description:"已核对的原开始日期 YYYY-MM-DD"},
+    newStart:{type:"string",description:"更正后的实际开始日 YYYY-MM-DD"},
+    newEnd:{type:"string",description:"更正后的实际结束日 YYYY-MM-DD"},
+    quote:{type:"string",description:"用户本轮要求更正的原话"}},
+    required:["start","quote"],additionalProperties:false}} as const;
+export const updateSettings = {name:"update_cycle_settings",description:"调整当前用户的周期间隔或预计经期天数。省略的设置保留原值。",
+  parameters:{type:"object",properties:{
+    cycleDays:{type:"integer",minimum:2,maximum:365,description:"两次开始日间的天数"},
+    expectedPeriodDays:{type:"integer",minimum:1,maximum:364,description:"预计每次持续天数，须小于周期间隔"},
+    quote:{type:"string",description:"用户本轮要求调整设置的原话"}},
+    required:["quote"],additionalProperties:false}} as const;
 export function cycleTools(store:CycleStore,session:string,question:string,today:string):AgentTool[] {
   const result=(data:unknown)=>({content:[{type:"text" as const,text:JSON.stringify(data)}],details:{}});
-  let reviewed:Period[] | undefined;
+  let reviewed:CalendarData | undefined;
+  function reviewedCalendar() {
+    if(!reviewed) throw new Error("请先读取经期日历核对实际记录和设置");
+    return reviewed;
+  }
+  function checkQuote(quote:unknown) {
+    if(typeof quote!=="string" || !quote.trim() || !question.includes(quote)) throw new Error("请引用用户本轮操作日历的原话");
+  }
   return [
     {...readCycle,label:"查看经期日历",async execute(){
-      const {length,duration,periods}=store.read(session);
-      reviewed=periods;
+      reviewed=store.read(session);
+      const {length,duration,periods}=reviewed;
       return result({today,cycleDays:length,expectedPeriodDays:duration,periods});
     }},
     {...recordPeriod,label:"登记实际经期",executionMode:"sequential",async execute(_id,args){
       const {quote,start,end}=args as {quote:string;start:string;end?:string};
-      if(typeof quote!=="string" || !quote.trim() || !question.includes(quote)) throw new Error("请引用用户本轮的实际经期描述");
+      checkQuote(quote);
       return result(store.record(session,start,end??undefined,today));
     }},
     {...cancelPeriod,label:"撤销经期记录",executionMode:"sequential",async execute(_id,args){
       const {start,target,quote}=args as {start:string;target:"period"|"end";quote:string};
-      if(typeof quote!=="string" || !quote.trim() || !question.includes(quote)) throw new Error("请引用用户本轮要求撤销的原话");
+      checkQuote(quote);
       if(target!=="period" && target!=="end") throw new Error("请指定撤销整次记录或仅撤销结束日");
-      if(!reviewed) throw new Error("请先读取经期日历核对实际记录");
-      const period=reviewed.find(p=>p.start===start);
+      const period=reviewedCalendar().periods.find(p=>p.start===start);
       if(!period) return result({status:"not_found",start});
       return result(store.cancel(session,period,target,today));
+    }},
+    {...updatePeriod,label:"更正实际经期",executionMode:"sequential",async execute(_id,args){
+      const {start,newStart,newEnd,quote}=args as {start:string;newStart?:string;newEnd?:string;quote:string};
+      checkQuote(quote);
+      const period=reviewedCalendar().periods.find(p=>p.start===start);
+      if(!period) return result({status:"not_found",start});
+      if(newEnd!==undefined && typeof newEnd!=="string") throw new Error("请指定有效结束日；清除结束日请使用撤销工具");
+      return result(store.updatePeriod(session,period,newStart,newEnd,today));
+    }},
+    {...updateSettings,label:"调整周期设置",executionMode:"sequential",async execute(_id,args){
+      const {cycleDays,expectedPeriodDays,quote}=args as {cycleDays?:number;expectedPeriodDays?:number;quote:string};
+      checkQuote(quote);
+      return result(store.updateSettings(session,cycleDays,expectedPeriodDays,reviewedCalendar(),today));
     }},
   ];
 }

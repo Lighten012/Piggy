@@ -50,3 +50,41 @@ test("chat cancellation checks the reviewed record and scope before changing the
   assert.deepEqual(store.read("b").periods,[{start,end:"2026-11-15"}]);
   assert.match(JSON.stringify(await cancel.execute("cancel",args)),/not_found/);
 });
+
+test("chat corrects dates atomically and preserves the mobile sync cursor",async()=>{
+  const store=new CycleStore(new DatabaseSync(":memory:")),today="2026-11-22",quote="把开始日改到12日";
+  const original={start:"2026-11-11",end:"2026-11-15"};
+  store.sync("a",[{seq:1,kind:"period",...original},{seq:2,kind:"period",start:"2026-11-19"}],today);
+  const [read,,,update]=cycleTools(store,"a",quote,today);
+  const args={start:original.start,quote};
+  await assert.rejects(update.execute("call",{...args,newStart:"2026-11-12"}),/先读取/);
+  await read.execute("call",{});
+  const before=store.read("a");
+  for(const patch of [{newStart:"2026-11-19"}, {newStart:"2026-11-16"}, {newEnd:"2026-11-20"},{}]) {
+    await assert.rejects(update.execute("call",{...args,...patch}));
+    assert.deepEqual(store.read("a"),before);
+  }
+  await update.execute("call",{...args,newStart:"2026-11-12"});
+  assert.deepEqual(store.sync("a",[],today),{...before,errors:[],periods:[{start:"2026-11-12",end:original.end},before.periods[1]]});
+  await read.execute("call",{});
+  store.record("a","2026-11-12","2026-11-16",today);
+  await assert.rejects(update.execute("call",{...args,start:"2026-11-12",newEnd:"2026-11-17"}),/变化/);
+  await read.execute("call",{});
+  await update.execute("call",{...args,start:"2026-11-12",newStart:"2026-11-13",newEnd:"2026-11-17"});
+  assert.deepEqual(store.read("a").periods[0],{start:"2026-11-13",end:"2026-11-17"});
+});
+
+test("chat updates only requested settings and rejects stale or invalid edits",async()=>{
+  const store=new CycleStore(new DatabaseSync(":memory:")),today="2026-11-22",quote="改一下我的周期设置";
+  const [read,,,,settings]=cycleTools(store,"a",quote,today);
+  await read.execute("read",{});
+  await assert.rejects(settings.execute("call",{expectedPeriodDays:28,quote}));
+  await assert.rejects(settings.execute("call",{cycleDays:35,quote:"其他人的要求"}));
+  store.sync("a",[{seq:1,kind:"settings",length:30,duration:6}],today);
+  await assert.rejects(settings.execute("call",{cycleDays:35,quote}),/变化/);
+  await read.execute("read",{});
+  await settings.execute("call",{cycleDays:35,quote});
+  await settings.execute("call",{expectedPeriodDays:7,quote});
+  assert.deepEqual(store.sync("a",[],today),{length:35,duration:7,periods:[],through:1,errors:[]});
+  assert.equal(store.read("b").length,28);
+});
