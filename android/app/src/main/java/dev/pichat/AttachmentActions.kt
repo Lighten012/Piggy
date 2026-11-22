@@ -1,6 +1,10 @@
 package dev.pichat
 
 import android.Manifest
+import android.app.AlertDialog
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.Intent
 import android.app.Activity
 import android.content.ContentValues
 import android.content.Context
@@ -16,16 +20,71 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
 
-internal class AttachmentSaver(private val activity: Activity, private val client: PiggyClient) {
+internal class AttachmentActions(private val activity: Activity, private val client: PiggyClient) {
     private companion object {
         const val STORAGE_REQUEST = 72
         val writer = Executors.newSingleThreadExecutor()
     }
     var awaitingPermission: JSONObject? = null
-    fun label(file: JSONObject) = if (ImagePreviews.source(file) != null) "保存到相册" else "保存到下载目录"
+    private fun label(file: JSONObject) = if (ImagePreviews.source(file) != null) "保存到相册" else "保存到下载目录"
     private fun toast(message: String) = Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
 
-    fun save(file: JSONObject) {
+    fun showMenu(file: JSONObject, original: Uri? = null) {
+        if (file.optLong("until", Long.MAX_VALUE) <= System.currentTimeMillis()) {
+            toast("附件已过期")
+            return
+        }
+        AlertDialog.Builder(activity)
+            .setTitle(file.getString("name"))
+            .setItems(arrayOf(label(file), "用其他应用打开", "分享…")) { _, choice ->
+                when (choice) {
+                    0 -> save(file)
+                    1 -> chooseApp(file, original, Intent.ACTION_VIEW)
+                    2 -> chooseApp(file, original, Intent.ACTION_SEND)
+                }
+            }
+            .show()
+    }
+
+    private fun chooseApp(file: JSONObject, original: Uri?, action: String) {
+        fun launch(uri: Uri) {
+            if (activity.isFinishing || activity.isDestroyed) return
+            val name = file.getString("name")
+            val type = fileType(file)
+            val target = Intent(action).apply {
+                if (action == Intent.ACTION_SEND) {
+                    this.type = type
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                } else setDataAndType(uri, type)
+                clipData = ClipData.newRawUri(name, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            try {
+                val title = if (action == Intent.ACTION_VIEW) "选择打开方式" else null
+                activity.startActivity(Intent.createChooser(target, title))
+            } catch (_: ActivityNotFoundException) {
+                toast("没有可用的应用")
+            } catch (_: SecurityException) {
+                toast("无法向其他应用提供原件，请检查文件读取权限")
+            }
+        }
+        if (original != null) launch(original)
+        else if (file.has("key")) {
+            client.fetchReply(file) { uri, error ->
+                if (uri != null) launch(uri) else toast(error ?: "文件下载失败")
+            }
+        } else launch(Uri.parse(file.getString("uri")))
+    }
+
+    private fun fileType(file: JSONObject): String {
+        val declared = file.optString("mime")
+        if (declared.isNotBlank() && declared != "application/octet-stream") return declared
+        val extension = File(file.getString("name")).extension.lowercase()
+        return android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+            ?: "application/octet-stream"
+    }
+
+    private fun save(file: JSONObject) {
         if (file.optLong("until", Long.MAX_VALUE) <= System.currentTimeMillis()) {
             toast("附件已过期")
             return
@@ -43,11 +102,7 @@ internal class AttachmentSaver(private val activity: Activity, private val clien
                 val album = ImagePreviews.source(file) != null
                 val folder = if (album) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_DOWNLOADS
                 val name = File(file.getString("name").replace('\\', '/')).name.takeUnless { it.isBlank() || it == "." || it == ".." } ?: "附件"
-                val declared = file.optString("mime")
-                val mime = if (album && !declared.startsWith("image/"))
-                    android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(File(name).extension.lowercase()) ?: "image/jpeg"
-                else declared.ifBlank { "application/octet-stream" }
-                saveCopy(context, uri, folder, name, mime, album)
+                saveCopy(context, uri, folder, name, fileType(file), album)
                 if (album) "已保存到系统相册 · Piggy" else "已保存到下载目录 · Piggy"
             } catch (_: Exception) { "保存失败，请检查原件和手机存储空间后重试" }
             activity.runOnUiThread { Toast.makeText(context, message, Toast.LENGTH_LONG).show() }

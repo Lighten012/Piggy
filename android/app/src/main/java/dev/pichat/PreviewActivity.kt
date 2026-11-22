@@ -1,8 +1,6 @@
 package dev.pichat
 
 import android.app.Activity
-import android.content.ClipData
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
@@ -34,7 +32,7 @@ import org.json.JSONObject
 
 class PreviewActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
-    private val saver by lazy { AttachmentSaver(this, client) }
+    private val attachmentActions by lazy { AttachmentActions(this, client) }
     private val markdown by lazy { chatMarkdown(this) }
     private lateinit var client: PiggyClient
     private lateinit var info: JSONObject
@@ -96,7 +94,7 @@ class PreviewActivity : Activity() {
         info = JSONObject(requireNotNull(intent.getStringExtra("file")))
         index = state?.getInt("page") ?: 0
         client = PiggyClient(this) {}
-        saver.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
+        attachmentActions.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
         temp =
             File.createTempFile("reader-", ".tmp", cacheDir).apply {
                 delete()
@@ -134,7 +132,7 @@ class PreviewActivity : Activity() {
             },
             LinearLayout.LayoutParams(0, dp(52), 1f),
         )
-        more = action("⋮", "文件操作") { fileMenu() }
+        more = action("⋮", "文件操作") { attachmentActions.showMenu(info, original) }
         more.isEnabled = false
         bar.addView(more)
         root.addView(bar)
@@ -173,7 +171,7 @@ class PreviewActivity : Activity() {
 
     override fun onSaveInstanceState(out: Bundle) {
         super.onSaveInstanceState(out)
-        saver.awaitingPermission?.let { out.putString("savingAttachment", it.toString()) }
+        attachmentActions.awaitingPermission?.let { out.putString("savingAttachment", it.toString()) }
         out.putInt("page", index)
     }
 
@@ -520,7 +518,7 @@ class PreviewActivity : Activity() {
     private fun showBrowser(mode: String, kind: String) {
         val sheet = mode == "sheet"
         val web = WebView(this)
-        if (!sheet) web.setOnLongClickListener { saver.save(info); true }
+        if (!sheet) web.setOnLongClickListener { attachmentActions.showMenu(info, original); true }
         browser = web
         web.settings.apply {
             javaScriptEnabled = sheet
@@ -600,33 +598,9 @@ class PreviewActivity : Activity() {
         web.loadUrl(if (sheet) "$origin/workbook.html?$kind" else "$origin/image")
     }
 
-    private fun fileMenu() {
-        val uri = original ?: return
-        PopupMenu(this, more).apply {
-            menu.add(saver.label(info)).setOnMenuItemClickListener {
-                saver.save(info)
-                true
-            }
-            menu.add("用其他应用打开").setOnMenuItemClickListener {
-                try {
-                    startActivity(
-                        Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).apply {
-                            clipData = ClipData.newRawUri(name, uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                    )
-                } catch (_: android.content.ActivityNotFoundException) {
-                    Toast.makeText(this@PreviewActivity, "没有可打开此文件的应用", Toast.LENGTH_SHORT).show()
-                }
-                true
-            }
-            show()
-        }
-    }
-
     override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
-        saver.onPermissionResult(request, results)
+        attachmentActions.onPermissionResult(request, results)
     }
 
     override fun onDestroy() {

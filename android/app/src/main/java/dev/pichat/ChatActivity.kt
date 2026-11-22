@@ -28,7 +28,7 @@ import io.noties.markwon.ext.tables.TableAwareMovementMethod
 import io.noties.markwon.ext.tables.TableRowSpan
 
 class ChatActivity : Activity() {
-    private val saver by lazy { AttachmentSaver(this, client) }
+    private val attachmentActions by lazy { AttachmentActions(this, client) }
     private val markdown by lazy { chatMarkdown(this) }
     private lateinit var menu: ImageButton
     private var drawer: Dialog? = null
@@ -237,7 +237,7 @@ class ChatActivity : Activity() {
         root.addView(gate, LinearLayout.LayoutParams(match, 0, 1f))
         setContentView(root)
         client = PiggyClient(this) { updater.check() }
-        saver.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
+        attachmentActions.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
         client.lastUsage?.let(contextMeter::update)
         updater = AppUpdater(this, ::showVersion)
         renderHistory()
@@ -331,12 +331,12 @@ class ChatActivity : Activity() {
 
     override fun onSaveInstanceState(out: Bundle) {
         super.onSaveInstanceState(out)
-        saver.awaitingPermission?.let { out.putString("savingAttachment", it.toString()) }
+        attachmentActions.awaitingPermission?.let { out.putString("savingAttachment", it.toString()) }
     }
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
-        saver.onPermissionResult(request, results)
+        attachmentActions.onPermissionResult(request, results)
     }
 
     override fun onConfigurationChanged(config: android.content.res.Configuration) {
@@ -377,7 +377,7 @@ class ChatActivity : Activity() {
         isFocusable = true
         scaleType = ImageView.ScaleType.CENTER_CROP
         setOnClickListener { openFile(file) }
-        setOnLongClickListener { saver.save(file); true }
+        setOnLongClickListener { attachmentActions.showMenu(file); true }
         ImagePreviews.display(this, image, file.getString("name"))
     }
 
@@ -388,7 +388,7 @@ class ChatActivity : Activity() {
         contentDescription = "打开附件，" + file.getString("name")
         isFocusable = true
         setOnClickListener { openFile(file) }
-        setOnLongClickListener { saver.save(file); true }
+        setOnLongClickListener { attachmentActions.showMenu(file); true }
         addView(ImageView(this@ChatActivity).apply {
             setImageResource(R.drawable.attachment_document)
             background = shape(Color.rgb(240, 233, 247), 10)
