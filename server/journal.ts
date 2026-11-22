@@ -1,3 +1,4 @@
+import { CycleStore } from "./cycle.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { DatabaseSync } from "node:sqlite";
 import { MemoryIndex } from "./memory-index.ts";
@@ -28,6 +29,7 @@ function keywordExcerpt(text:string, terms:string[], size:number) {
 
 export class Journal {
   private db: DatabaseSync;
+  readonly cycles:CycleStore;
   readonly memories:MemoryStore;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -71,6 +73,7 @@ export class Journal {
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('local_files') WHERE name='provider_name'").get())
       this.db.exec("ALTER TABLE local_files ADD COLUMN provider_name TEXT");
+    this.cycles=new CycleStore(this.db);
     this.memories=new MemoryStore(this.db);
     this.initializeContext();
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('active_context') WHERE name='output_files'").get())

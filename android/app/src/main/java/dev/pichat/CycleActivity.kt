@@ -1,8 +1,10 @@
 package dev.pichat
 
 import android.app.Activity
+import android.app.Dialog
 import android.app.AlertDialog
 import android.content.res.ColorStateList
+import android.graphics.drawable.ColorDrawable
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -82,6 +84,18 @@ class CycleActivity : Activity() {
         setContentView(page)
         render()
     }
+    override fun onResume() {
+        super.onResume()
+        CycleSync.observe { error ->
+            render()
+            if (error != null) Toast.makeText(this, "日历同步：$error", Toast.LENGTH_SHORT).show()
+        }
+        CycleSync.refresh(this)
+    }
+    override fun onPause() {
+        CycleSync.observe(null)
+        super.onPause()
+    }
     override fun onSaveInstanceState(state: Bundle) {
         super.onSaveInstanceState(state)
         state.putInt("day", selected)
@@ -95,18 +109,20 @@ class CycleActivity : Activity() {
         "${get(Calendar.MONTH) + 1}月${get(Calendar.DAY_OF_MONTH)}日"
     }
     private fun setEnd(start: Int, end: Int?) {
-        val edit = prefs.edit()
-        if (end == null) edit.remove("end_$start") else edit.putInt("end_$start", end)
-        edit.apply()
+        val op = CycleSync.record("end", start).put("end", end?.let(CycleSync::iso) ?: org.json.JSONObject.NULL)
+        CycleSync.edit(this, op) { edit ->
+            if (end == null) edit.remove("end_$start") else edit.putInt("end_$start", end)
+        }
         render()
     }
     private fun select(day: Int) { selected = day; render() }
     private fun mark(record: Boolean) {
         val starts = model().starts
         val changed = if (record) starts + selected else starts - selected
-        val edit = prefs.edit().putStringSet("starts", changed.map { it.toString() }.toSet())
-        if (!record) edit.remove("end_$selected")
-        edit.apply()
+        CycleSync.edit(this, CycleSync.record(if (record) "period" else "remove", selected)) { edit ->
+            edit.putStringSet("starts", changed.map { it.toString() }.toSet())
+            if (!record) edit.remove("end_$selected")
+        }
         render()
     }
     private fun card(): LinearLayout = column().apply {
@@ -190,15 +206,13 @@ class CycleActivity : Activity() {
             }
             calendar.addView(strip)
         }
-        calendar.addView(label("“预计止”是预计的最后一天。记录实际结束后，整段经期会标为实记。", 13, muted).apply {
-            setPadding(dp(6), dp(12), dp(6), 0)
-        })
+        // Actual dates override predictions for this period only.
         val detail = card().apply { setPadding(dp(16), dp(14), dp(16), dp(14)) }
         val info = cycle.on(selected)
         val title = "${month}月${date.get(Calendar.DAY_OF_MONTH)}日"
         detail.addView(label(title + (info?.let { "  ·  周期第 ${it.position} 天" } ?: ""), 18, ink, true))
         val description = if (info == null) {
-            if (cycle.starts.isEmpty()) "点选最近一次月经开始的日期，记下第一天后即可查看预测。" else "这一天早于最早的经期记录。"
+            if (cycle.starts.isEmpty()) "还没有经期记录" else "当天没有记录"
         } else listOfNotNull(
             when {
                 info.confirmed -> "实记经期 · ${dateText(info.anchor)}至${dateText(info.actualEnd!!)}，共 ${info.actualEnd - info.anchor + 1} 天"
@@ -207,7 +221,7 @@ class CycleActivity : Activity() {
                 else -> null
             },
             if (info.period) info.predictedEnd?.let { "预计 ${dateText(it)} 结束" } else null,
-            info.phase?.let { "预计$it" } ?: "此时段不显示排卵估算",
+            info.phase?.let { "预计$it" },
             if (info.fertile) "预计易孕窗" else null
         ).joinToString(" · ")
         detail.addView(label(description, 15, muted).apply { setPadding(0, dp(6), 0, dp(12)) })
@@ -228,16 +242,27 @@ class CycleActivity : Activity() {
             }
         }
         content.addView(label("周期 ${cycle.length} 天  ·  预计经期 ${cycle.duration} 天", 14, ink, true))
-        content.addView(label("日期仅按记录推算，周期不规律时偏差更大，不能用于避孕。记录仅保存在本机。", 13, muted).apply { setPadding(0, dp(4), 0, 0) })
+        content.addView(label("预测仅供参考，不能用于避孕。", 13, muted).apply { setPadding(0, dp(4), 0, 0) })
     }
     private fun settings() {
         val cycle = model()
-        val form = column().apply { setPadding(dp(24), dp(12), dp(24), 0) }
+        val dialog = Dialog(this)
+        val sheet = column().apply {
+            background = box(paper, 26)
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+        }
+        sheet.addView(label("周期设置", 21, ink, true))
         val wheels = LinearLayout(this)
-        form.addView(wheels)
-        fun wheel(title: String, min: Int, max: Int, current: Int): NumberPicker {
-            val group = column().apply { gravity = Gravity.CENTER_HORIZONTAL }
-            wheels.addView(group, LinearLayout.LayoutParams(0, wrap, 1f))
+        sheet.addView(wheels, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(18) })
+        fun wheel(title: String, min: Int, max: Int, current: Int, fill: Int): NumberPicker {
+            val group = column().apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                background = box(fill, 18)
+                setPadding(dp(4), dp(12), dp(4), dp(6))
+            }
+            wheels.addView(group, LinearLayout.LayoutParams(0, wrap, 1f).apply {
+                if (wheels.childCount > 0) leftMargin = dp(10)
+            })
             val picker = NumberPicker(this).apply {
                 id = View.generateViewId()
                 minValue = min
@@ -245,19 +270,43 @@ class CycleActivity : Activity() {
                 value = current
                 wrapSelectorWheel = false
                 descendantFocusability = NumberPicker.FOCUS_BLOCK_DESCENDANTS
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    selectionDividerHeight = 0
+                    textColor = ink
+                    textSize = 19 * resources.displayMetrics.scaledDensity
+                }
             }
-            group.addView(label(title, 15).apply { labelFor = picker.id })
-            group.addView(picker, match, wrap)
+            group.addView(label(title, 14, muted, true).apply { labelFor = picker.id })
+            val track = FrameLayout(this)
+            track.addView(View(this).apply { background = box(paper, 12) },
+                FrameLayout.LayoutParams(match, dp(44), Gravity.CENTER).apply { setMargins(dp(6), 0, dp(6), 0) })
+            track.addView(picker, FrameLayout.LayoutParams(match, dp(144)))
+            group.addView(track)
             return picker
         }
-        val length = wheel("周期间隔（天）", 2, 365, cycle.length)
-        val duration = wheel("预计经期（天）", 1, cycle.length - 1, cycle.duration)
+        val length = wheel("周期间隔 · 天", 2, 365, cycle.length, lilac)
+        val duration = wheel("预计经期 · 天", 1, cycle.length - 1, cycle.duration, rose)
         length.setOnValueChangedListener { _, _, span -> duration.maxValue = span - 1 }
-        form.addView(label("间隔从一次开始日算到下次开始日。预计天数只用于预测。", 13, muted))
-        AlertDialog.Builder(this).setTitle("周期设置").setView(ScrollView(this).apply { addView(form) })
-            .setNegativeButton("取消", null).setPositiveButton("保存") { _, _ ->
-                prefs.edit().putInt("length", length.value).putInt("duration", duration.value).apply()
-                render()
-            }.show()
+        val actions = LinearLayout(this)
+        sheet.addView(actions, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(16) })
+        actions.addView(action("取消", paper) { dialog.dismiss() }, LinearLayout.LayoutParams(0, wrap, 1f))
+        actions.addView(action("保存", plum) {
+            CycleSync.edit(this, CycleSync.settings(length.value, duration.value)) {
+                it.putInt("length", length.value).putInt("duration", duration.value)
+            }
+            dialog.dismiss()
+            render()
+        }.apply { setTextColor(paper) }, LinearLayout.LayoutParams(0, wrap, 2f))
+        val scroll = ScrollView(this).apply {
+            setPadding(dp(8), 0, dp(8), dp(8))
+            addView(sheet)
+        }
+        dialog.setContentView(scroll)
+        dialog.window?.apply {
+            setGravity(Gravity.BOTTOM)
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setLayout(minOf(resources.displayMetrics.widthPixels, dp(520)), wrap)
+        }
+        dialog.show()
     }
 }

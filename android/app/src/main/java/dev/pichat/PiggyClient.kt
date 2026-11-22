@@ -28,9 +28,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     @Volatile private var closed = false
     private val connections = ConcurrentHashMap.newKeySet<HttpsURLConnection>()
     private val prefs = context.getSharedPreferences("conversation", Context.MODE_PRIVATE)
-    private val session = prefs.getString("session", null) ?: UUID.randomUUID().toString().also {
-        prefs.edit().putString("session", it).commit()
-    }
+    private val session = CycleSync.session(this.context)
     val recent: JSONArray get() = JSONArray(prefs.getString("recent", "[]"))
     val draft: String get() = prefs.getString("composer", prefs.getString("pendingDraft", "")).orEmpty()
     val pendingDraft: String get() = prefs.getString("pendingDraft", "").orEmpty()
@@ -282,7 +280,8 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                 check(prefs.edit().putString("pendingFiles",JSONArray(files).toString()).commit())
             }
             ui { status("正在回复…") }
-            val data = JSONObject().put("text",text).put("session",session).put("request",id)
+            retryNetwork(status) { CycleSync.sync(context, true) }
+            val data = JSONObject().put("timeZone", java.util.TimeZone.getDefault().id).put("text",text).put("session",session).put("request",id)
             if (files.isNotEmpty()) data.put("attachments",JSONArray(files.map { it.getString("id") }))
             retryNetwork(status) {
                 post(endpoint, { http ->
@@ -338,6 +337,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                 }
             }
         }.exceptionOrNull()
+        CycleSync.afterChat(context)
         if (!closed) ui { finished(failure?.localizedMessage) }
     }
 

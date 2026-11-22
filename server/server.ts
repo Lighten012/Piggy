@@ -1,3 +1,4 @@
+import { cycleTools, localToday } from "./cycle.ts";
 import { persona } from "./persona.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
@@ -291,7 +292,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       catch (error) { throw new ContextError(error instanceof AttachmentError ? error.message : "附件服务暂时不可用，请稍后重试"); }
     }
     const turns = journal.contextTurns(conversation);
-    const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id)];
+    const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone))];
     agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,systemPrompt,count,
       tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; });
     unsubscribe = agent.subscribe(event => {
@@ -375,6 +376,20 @@ async function saveSettings(req: IncomingMessage, res: ServerResponse) {
   res.writeHead(200,{"Content-Type":"application/json"});
   res.end(JSON.stringify(activeSettings()));
 }
+async function syncCycle(req:IncomingMessage,res:ServerResponse) {
+  const chunks:Buffer[]=[];
+  let size=0;
+  for await (const chunk of req) {
+    size+=chunk.length;
+    if(size>32768) return reject(res,413,"同步批次过大");
+    chunks.push(chunk);
+  }
+  const data=JSON.parse(Buffer.concat(chunks).toString());
+  if(typeof data?.session!=="string"||!uuid.test(data.session)) return reject(res,400,"对话编号无效");
+  const state=journal.cycles.sync(data.session,data.changes,localToday(data.timeZone));
+  res.writeHead(200,{"Content-Type":"application/json"});
+  res.end(JSON.stringify(state));
+}
 function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -418,6 +433,10 @@ function handle(req: IncomingMessage, res: ServerResponse) {
     return res.end(JSON.stringify({turns:journal.page(after,before)}));
   }
   if (req.headers["x-piggy-owner"] !== "mobile") return reject(res,405,"网页仅支持查看记录");
+  if (url.pathname === "/cycle" && req.method === "POST") {
+    void syncCycle(req,res).catch(() => reject(res,400,"日历同步请求无效"));
+    return;
+  }
   if (url.pathname === "/attachments" && req.method === "POST") {
     if (!apiKey || (!fixturePort && memoryUnderPressure())) return reject(res,503,"服务暂时无法接收附件");
     void receiveAttachment(req,res,journal,retention,baseUrl,apiKey).catch(() => {
