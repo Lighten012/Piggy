@@ -57,3 +57,9 @@ Android 发送前在本地保存请求编号、内容与附件编号，然后在
 Android 设置页按机型命名入口。vivo / iQOO 显示「后台耗电管理」，优先用电池组件公开的后台耗电管理 action 打开列表，用户选择当前安装的 Piggy 后再选「允许后台耗电」。此处采用维护者在 vivo S50 Pro mini（OriginOS 6）看到的菜单文字。公开固件样本可以核对列表入口，但不能证明每个版本都向第三方开放单应用详情。OPPO 显示「应用耗电管理」，由用户进入 Piggy 后开启后台活动。厂商入口不可用时先显示本机操作路径，用户可以选择继续前往系统电池设置。Android 通用入口继续打开本应用的电池页。
 
 入口核对依据包括[公开 vivo 系统镜像中的电池组件声明](https://github.com/el-vertedero/iqoo_canoe_dump/tree/e73f73042dee4591810c3727bb2d7d84b233bd96/system/system/app/IqooPowerSaving)和 [ColorOS 14.1 使用手册的应用耗电管理说明](https://s3.eu-west-3.amazonaws.com/par-sow-cms-oppo-com/cms/userManual/manual/3524d044-8881-4c19-b61f-c2da2949c1f7/ColorOS%2014.1%20User%20Manual.pdf)。该 vivo 镜像来自其他设备；具体机型仍需真机核对。
+
+## Android 经期日历
+
+首版把实际经期开始日、设定的周期间隔和经期天数保存在当前安装的私有偏好中，在手机上按当地日历日期计算。首次使用须主动记录开始日。后续实际记录重新锚定预测，已记录的两次开始日之间不会插入虚构的月经。只有开始日标为“已记”，其他经期天数与阶段均标为预测。当前版本没有跨设备备份。
+
+本版只对 21–35 天的周期显示排卵估算。排卵估在周期第「周期长度减 14」天，易孕窗取前五天至后一天，可与经期或黄体期重叠。此范围是产品显示策略。周期、经期长度可分别设置，出于记录目的可以使用更长或更短的周期。日历法无法确认排卵，预测不可作为避孕依据。[ACOG 对日历估算与易孕窗的说明](https://www.acog.org/womens-health/experts-and-stories/the-latest/trying-to-get-pregnant-heres-when-to-have-sex)

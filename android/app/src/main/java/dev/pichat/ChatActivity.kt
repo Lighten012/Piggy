@@ -294,19 +294,23 @@ class ChatActivity : Activity() {
             setOnClickListener { dialog.dismiss() }
         }
         panel.addView(current, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(26) })
-        val settings = text("设置", 16f, ink).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), 0, dp(12), 0)
-            setCompoundDrawablesWithIntrinsicBounds(R.drawable.nav_settings, 0, 0, 0)
-            compoundDrawablePadding = dp(12)
-            background = RippleDrawable(ColorStateList.valueOf(0x22694D83), shape(paper, 16), null)
-            isFocusable = true
-            setOnClickListener {
-                dialog.dismiss()
-                startActivity(Intent(this@ChatActivity, SettingsActivity::class.java))
+        fun drawerItem(label: String, icon: Int, destination: Class<out Activity>) {
+            val item = text(label, 16f, ink).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), 0, dp(12), 0)
+                setCompoundDrawablesWithIntrinsicBounds(icon, 0, 0, 0)
+                compoundDrawablePadding = dp(12)
+                background = RippleDrawable(ColorStateList.valueOf(0x22694D83), shape(paper, 16), null)
+                isFocusable = true
+                setOnClickListener {
+                    dialog.dismiss()
+                    startActivity(Intent(this@ChatActivity, destination))
+                }
             }
+            panel.addView(item, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(6) })
         }
-        panel.addView(settings, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(6) })
+        drawerItem("经期管理", R.drawable.nav_cycle, CycleActivity::class.java)
+        drawerItem("设置", R.drawable.nav_settings, SettingsActivity::class.java)
         panel.addView(Space(this), LinearLayout.LayoutParams(1, 0, 1f))
         panel.addView(text("v" + BuildConfig.VERSION_NAME, 12f, muted).apply { setPadding(dp(12),0,0,0) })
         dialog.setContentView(panel)

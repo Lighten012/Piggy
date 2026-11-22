@@ -14,6 +14,7 @@
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.updates" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths"/>
         </provider>
+        <activity android:name=".CycleActivity" android:label="经期管理" android:exported="false" />
         <activity android:name=".SettingsActivity" android:label="设置" android:exported="false" />
         <activity android:name="dev.pichat.PreviewActivity" android:exported="false" />
         <activity android:name=".ChatActivity" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize" android:exported="true">
