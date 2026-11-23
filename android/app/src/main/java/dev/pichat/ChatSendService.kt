@@ -52,7 +52,7 @@ class ChatSendService : Service() {
             .createNotificationChannel(NotificationChannel(channel, "消息发送", NotificationManager.IMPORTANCE_LOW))
         val open = Intent(this, ChatActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val notification = NotificationCompat.Builder(this, channel)
-            .setSmallIcon(R.drawable.nav_chat).setContentTitle(getString(R.string.app_name))
+            .setSmallIcon(R.drawable.ic_piggy_notification).setContentTitle(getString(R.string.app_name))
             .setContentText("正在发送消息或等待回复").setOngoing(true).setOnlyAlertOnce(true)
             .setContentIntent(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build()
         startForeground(1, notification)
