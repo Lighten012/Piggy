@@ -83,6 +83,7 @@ class ChatSendService : Service() {
             running = null
             client.endFlight()
             stopForeground(STOP_FOREGROUND_REMOVE)
+            if (it == null && !outdated) ReplyNotifications.onReplySaved(this)
             stopSelf(latestStart)
             listener?.finished(it, outdated)
         })

@@ -342,7 +342,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
             }
         }.exceptionOrNull()
         CycleSync.afterChat(context)
-        if (!closed) ui { finished(failure?.localizedMessage) }
+        if (!closed) ui { finished(failure?.let { it.localizedMessage ?: "发送失败，请重试" }) }
     }
 
     private val downloads = Executors.newSingleThreadExecutor()

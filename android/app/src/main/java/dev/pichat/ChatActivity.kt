@@ -700,6 +700,12 @@ class ChatActivity : Activity() {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         if (!retry) input.setText("")
         watchSend()
+        if (generating) ReplyNotifications.askOnce(this)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == ReplyNotifications.OPEN_REPLY) toBottom()
     }
 
     private fun renderHistory() {
@@ -723,11 +729,13 @@ class ChatActivity : Activity() {
     override fun onStart() {
         super.onStart()
         chatVisible = true
+        ReplyNotifications.chatStarted(this)
         refreshPhrases.run()
         replyWait?.visible(true)
     }
     override fun onStop() {
         chatVisible = false
+        ReplyNotifications.chatStopped()
         chat.removeCallbacks(refreshPhrases)
         replyWait?.visible(false)
         super.onStop()
