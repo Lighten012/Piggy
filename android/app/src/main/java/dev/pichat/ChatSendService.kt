@@ -79,13 +79,13 @@ class ChatSendService : Service() {
         }, delta = {
             partial.append(it)
             notifyProgress()
-        }, finished = {
+        }, finished = { error, savedReply ->
             running = null
             client.endFlight()
             stopForeground(STOP_FOREGROUND_REMOVE)
-            if (it == null && !outdated) ReplyNotifications.onReplySaved(this)
+            if (error == null && !outdated && savedReply != null) ReplyNotifications.onReplySaved(this, savedReply)
             stopSelf(latestStart)
-            listener?.finished(it, outdated)
+            listener?.finished(error, outdated)
         })
         return START_REDELIVER_INTENT
     }

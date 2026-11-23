@@ -9,6 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.widget.RemoteViews
+import org.json.JSONObject
+import org.commonmark.parser.Parser
+import org.commonmark.renderer.text.TextContentRenderer
 import androidx.core.app.NotificationCompat
 
 internal object ReplyNotifications {
@@ -38,7 +42,24 @@ internal object ReplyNotifications {
         activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_REQUEST)
     }
 
-    fun onReplySaved(context: Context) {
+    private val parser by lazy { Parser.builder().inlineParserFactory(::cjkInlineParser).build() }
+    private val plainText by lazy { TextContentRenderer.builder().build() }
+
+    private fun preview(turn: JSONObject): String {
+        val answer = turn.optString("answer").trim()
+        val file = turn.optJSONArray("replyFiles")?.optJSONObject(0)
+        if (answer.isNotEmpty() && !(file != null && answer == "已生成附件。")) {
+            val line = plainText.render(parser.parse(answer.take(2048))).trim().replace(Regex("\\s+"), " ")
+            if (line.isNotEmpty()) return line
+        }
+        if (file != null) {
+            if (file.optString("mime").startsWith("image/")) return "[图片]"
+            return ("[文件] " + file.optString("name")).trimEnd()
+        }
+        return if (turn.has("stickerId")) "[表情]" else "[新消息]"
+    }
+
+    fun onReplySaved(context: Context, turn: JSONObject) {
         if (visibleChats > 0) return
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
@@ -49,10 +70,18 @@ internal object ReplyNotifications {
         }
         val open = Intent(context, ChatActivity::class.java).setAction(OPEN_REPLY)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val body = preview(turn)
+        val content = RemoteViews(context.packageName, R.layout.notification_reply).apply {
+            setTextViewText(R.id.notification_body, body)
+        }
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.nav_chat)
-            .setContentTitle("小猪回复你啦")
-            .setContentText("点开看看 Piggy 的回复")
+            .setContentTitle(context.getString(R.string.reply_notification_title))
+            .setContentText(body)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(content)
+            .setCustomHeadsUpContentView(content)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(PendingIntent.getActivity(context, NOTIFICATION_ID, open,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)

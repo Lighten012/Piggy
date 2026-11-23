@@ -266,7 +266,8 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         }
     }
 
-    fun send(text: String, draftText: String, status: (String) -> Unit, measured: (ContextUsage) -> Unit, delta: (String) -> Unit, finished: (String?) -> Unit) = worker.execute {
+    fun send(text: String, draftText: String, status: (String) -> Unit, measured: (ContextUsage) -> Unit, delta: (String) -> Unit, finished: (String?, JSONObject?) -> Unit) = worker.execute {
+        var savedReply: JSONObject? = null
         val failure = runCatching {
             val id = checkNotNull(prefs.getString("pendingId", null))
             val files = pendingAttachments
@@ -334,6 +335,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                     val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
                     check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
                         .remove("sending").remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
+                    savedReply = turn
                     if (evicted != null) for (file in turnFiles(evicted)) {
                         ImagePreviews.discard(context, file.getString("id"))
                         releaseFile(file)
@@ -342,7 +344,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
             }
         }.exceptionOrNull()
         CycleSync.afterChat(context)
-        if (!closed) ui { finished(failure?.let { it.localizedMessage ?: "发送失败，请重试" }) }
+        if (!closed) ui { finished(failure?.let { it.localizedMessage ?: "发送失败，请重试" }, savedReply) }
     }
 
     private val downloads = Executors.newSingleThreadExecutor()
