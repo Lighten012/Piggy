@@ -180,6 +180,11 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
 
     private fun ui(action: () -> Unit) = main.post { if (!closed) action() }
 
+    @Synchronized
+    private fun invalidatePendingRequest() {
+        if (!closed) prefs.edit().remove("pendingId").commit()
+    }
+
     private fun post(url: URL, write: (HttpsURLConnection) -> Unit, consume: (HttpsURLConnection) -> Unit) {
         val http = url.openConnection() as HttpsURLConnection
         connections.add(http)
@@ -195,7 +200,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
             val status = http.responseCode
             if (status !in 200..299) {
                 if (status == 426) ui(outdated)
-                if (status == 422 && url == endpoint) prefs.edit().remove("pendingId").commit()
+                if (status == 422 && url == endpoint) invalidatePendingRequest()
                 val detail = http.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
                 val message = runCatching { JSONObject(detail).getString("error") }.getOrNull()
                 throw HttpFailure(status, http.getHeaderField("Retry-After") != null, message ?: "服务器返回 HTTP $status")
@@ -279,7 +284,10 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
             for (file in files) {
                 if (file.optBoolean("uploaded")) continue
                 retryNetwork(status) { upload(file) }
-                check(prefs.edit().putString("pendingFiles",JSONArray(files).toString()).commit())
+                synchronized(this@PiggyClient) {
+                    if (closed) throw IOException("发送任务已暂停")
+                    check(prefs.edit().putString("pendingFiles",JSONArray(files).toString()).commit())
+                }
             }
             ui { status(ReplyPhrases.WAITING) }
             retryNetwork(status) { CycleSync.sync(context, true) }
@@ -303,7 +311,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                                 runCatching { usage(it) }.getOrNull()?.let { value -> ui { measured(value) } }
                             }
                             if (event.has("error")) {
-                                prefs.edit().remove("pendingId").commit()
+                                invalidatePendingRequest()
                                 throw IllegalStateException(event.getString("error"))
                             }
                             if (event.has("delta")) {
@@ -324,7 +332,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                     }
                     if (!done) throw IOException("回复中断，请重试")
                     val saved = recent
-                    val turn = JSONObject().put("text", draftText).put("answer", answer.toString())
+                    val turn = JSONObject().put("request", id).put("text", draftText).put("answer", answer.toString())
                     if (files.isNotEmpty()) {
                         files.forEach { ImagePreviews.save(context, it) }
                         turn.put("files", JSONArray(files))
@@ -333,8 +341,11 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                     replies?.let { turn.put("replyFiles", it) }
                     saved.put(turn)
                     val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
-                    check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
-                        .remove("sending").remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
+                    synchronized(this@PiggyClient) {
+                        if (closed || pendingId != id) throw IOException("发送任务已暂停")
+                        check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
+                            .remove("sending").remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
+                    }
                     savedReply = turn
                     if (evicted != null) for (file in turnFiles(evicted)) {
                         ImagePreviews.discard(context, file.getString("id"))
@@ -413,7 +424,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     }
 
     fun close() {
-        closed = true
+        synchronized(this) { closed = true }
         connections.forEach { it.disconnect() }
         selectionWorker.shutdownNow()
         contextWorker.shutdownNow()

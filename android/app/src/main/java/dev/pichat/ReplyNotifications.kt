@@ -76,7 +76,6 @@ internal object ReplyNotifications {
         }
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_piggy_notification)
-            .setContentTitle(context.getString(R.string.reply_notification_title))
             .setContentText(body)
             .setStyle(NotificationCompat.DecoratedCustomViewStyle())
             .setCustomContentView(content)
