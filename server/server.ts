@@ -1,3 +1,4 @@
+import { stickerRequest,stickerTool } from "./stickers.ts";
 import { cycleTools, localToday } from "./cycle.ts";
 import { persona } from "./persona.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -28,6 +29,7 @@ if (!workerToken || host !== "127.0.0.1") throw new Error("Pi requires a private
 const dbPath = process.env.PIGGY_DB;
 if (!dbPath) throw new Error("PIGGY_DB is required");
 const journal = new Journal(dbPath);
+journal.stickers.seed(new URL("./starter-stickers/",import.meta.url));
 const retention = new Retention(dbPath);
 async function cleanAttachments() {
   try { await retention.sweep(journal); }
@@ -138,7 +140,8 @@ function toolsForInput(input:unknown[], previous:string[], messages:Message[]) {
 function systemInstructions() {
   const prompt = [persona, ...loadedSkills.map(skill => skill.instructions)].join("\n\n");
   const today = new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Shanghai"}).format(Date.now());
-  return prompt + "\n当前北京时间日期：" + today + "。";
+  const stickers=journal.stickers.list(true).map(({id,name,description})=>({id,name,description}));
+  return prompt + "\n当前上架表情（条目是素材说明）："+JSON.stringify(stickers) + "\n当前北京时间日期：" + today + "。";
 }
 type ContextUsage = Awaited<ReturnType<typeof countInput>>;
 function wireInput(model: Model<"openai-responses">, systemPrompt:string, messages:FileMessage[]) {
@@ -252,7 +255,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     }
     if (existing.status === "failed") return reject(res,422,"上次生成中断，请重新发送");
     res.writeHead(200, {"Content-Type":"application/x-ndjson; charset=utf-8"});
-    res.end(JSON.stringify({delta:existing.answer}) + "\n" + JSON.stringify({done:true,session:conversation,answer:existing.answer,replyFiles:journal.replyFiles(Number(existing.id))}) + "\n");
+    res.end(JSON.stringify({delta:existing.answer}) + "\n" + JSON.stringify({done:true,session:conversation,answer:existing.answer,...(existing.stickerId?{stickerId:existing.stickerId}:{}),replyFiles:journal.replyFiles(Number(existing.id))}) + "\n");
     return;
   }
   if (busy) return reject(res,409,"上一条消息仍在生成，请稍后重试");
@@ -298,7 +301,8 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       catch (error) { throw new ContextError(error instanceof AttachmentError ? error.message : "附件服务暂时不可用，请稍后重试"); }
     }
     const turns = journal.contextTurns(conversation);
-    const toolsForTurn = [memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id,file=>restoreOutputReference(retention,file,baseUrl,apiKey!)), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone),id)];
+    let stickerId:string|undefined, stickerOnly=false;
+    const toolsForTurn = [stickerTool(journal.stickers,(id,only)=>{stickerId=id;stickerOnly=only;}), memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id,file=>restoreOutputReference(retention,file,baseUrl,apiKey!)), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone),id)];
     const runningTools=new Map<string,unknown>();
     const toolFailures:{name:string;args:unknown;content:unknown}[]=[];
     let stopTools=false;
@@ -317,7 +321,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         partial += event.assistantMessageEvent.delta;
-        emit({ delta: event.assistantMessageEvent.delta });
+        if(!stickerOnly) emit({ delta: event.assistantMessageEvent.delta });
       }
     });
     const current:FileMessage = {fileRefs:files,role:"user",content:question,timestamp:Date.now()};
@@ -347,15 +351,17 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     }
     for (const part of last.content) if (part.type === "text") part.text = search.render(part.text);
     const text = last.content.filter(part => part.type === "text").map(part => part.text).join("");
-    const answer = await outputs.deliver(text,controller.signal);
-    if (!answer.trim()) throw new Error("Model returned no visible reply");
+    const delivered = await outputs.deliver(text,controller.signal);
+    const answer=stickerOnly && !outputs.files.length ? "" : delivered;
+    if (stickerOnly && !answer) last.content=[{type:"text",text:"[已发送表情]"}];
+    if (!answer.trim() && !stickerId) throw new Error("Model returned no visible reply");
     if (outputs.files.length) {
       last.content = [...last.content.filter(part => part.type !== "text"), {type:"text",
         text:answer+"\n回复附件："+outputs.files.map(f=>f.name).join("、")}];
     }
-    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, prepared.replacement);
+    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, prepared.replacement, stickerId);
     committed = true;
-    emit({ done:true, session:conversation, answer, replyFiles:journal.replyFiles(id) });
+    emit({ done:true, session:conversation, answer, ...(stickerId?{stickerId}:{}), replyFiles:journal.replyFiles(id) });
     console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", compacted:!!prepared.replacement, webSearchUsed:search.used,
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
@@ -427,6 +433,10 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if (!timingSafeEqual(digest(req.headers.authorization || ""), workerAuth)) return reject(res,401,"身份无效");
   const url = new URL(req.url || "/", "http://localhost");
+  if (url.pathname === "/stickers" || url.pathname.startsWith("/stickers/")) {
+    void stickerRequest(journal.stickers,req,res,url.pathname,req.headers["x-piggy-owner"]==="admin").catch(()=>reject(res,500,"表情暂时不可用"));
+    return;
+  }
   if (url.pathname === "/capabilities" && req.headers["x-piggy-owner"] === "admin" &&
       (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, {"Content-Type":"application/json"});

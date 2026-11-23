@@ -29,6 +29,7 @@ test("records accepted mobile turns and restores context after restart", async t
   const fileInputs: string[][] = [];
   const fileGroups:string[][][]=[];
   const summaries:string[] = [];
+  let chosenSticker="";
   let recallTurn=0;
   let repeatedCalls=0, stoppedLoop=false, receiptSteps=0;
   let recalledContainerIds:string[]=[];
@@ -139,11 +140,12 @@ test("records accepted mobile turns and restores context after restart", async t
     if(loop) stoppedLoop=payload.tool_choice==="none";
     if(users.at(-1)==="reopen archived file" && payload.input.at(-1).type==="function_call_output")
       recalledContainerIds=payload.tools.find(t=>t.type==="code_interpreter").container.file_ids ?? [];
-    if (["reopen archived file","请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1))
+    const sticker=users.at(-1)?.startsWith("sticker probe ");
+    if ((sticker || ["reopen archived file","请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1)))
         && payload.input.at(-1).type !== "function_call_output") {
       const recall=users.at(-1)==="reopen archived file";
-      const item = {type:"function_call",name:recall ? "read_chat_context" : "save_memory",id:"fc_test"+histories.length,
-        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify(recall ? {source:"turn",id:recallTurn,includeAttachments:true} : {text:"只喝温水"})};
+      const item = {type:"function_call",name:sticker ? "send_sticker" : recall ? "read_chat_context" : "save_memory",id:"fc_test"+histories.length,
+        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify(sticker ? {id:chosenSticker,only:users.at(-1).endsWith("only")} : recall ? {source:"turn",id:recallTurn,includeAttachments:true} : {text:"只喝温水"})};
       for (const event of [
         {type:"response.output_item.added",output_index:0,item:{...item,arguments:""}},
         {type:"response.output_item.done",output_index:0,item},
@@ -220,7 +222,7 @@ test("records accepted mobile turns and restores context after restart", async t
   const list = await (await fetch(worker.base+"/history",{headers:admin})).json();
   assert.deepEqual(list.turns.map(r=>[r.question,r.answer,r.status]),[
     ["one","OK","complete"],["failed","","failed"],["two","OK","complete"],["separate","OK","complete"]]);
-  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","files","filesize","id","question","replyFiles","status"]);
+  assert.deepEqual(Object.keys(list.turns[0]).sort(),["answer","created","filename","files","filesize","id","question","replyFiles","status","stickerId"]);
   assert.equal((await (await fetch(worker.base+"/history?after=2",{headers:admin})).json()).turns.length,2);
   const preview = await fetch(worker.base+"/context",{method:"POST",headers:mobile,body:JSON.stringify({session})});
   assert.deepEqual(await preview.json(),{used:12,limit});
@@ -367,6 +369,27 @@ test("records accepted mobile turns and restores context after restart", async t
 
   assert.equal((await send("retry count",randomUUID(),randomUUID())).at(-1).done,true);
   assert.ok(transientCounts >= 2);
+
+  const library=await (await fetch(worker.base+"/stickers",{headers:admin})).json();
+  assert.equal(library.length,5);
+  chosenSticker=library[0].id;
+  const imageUrl=worker.base+"/stickers/"+chosenSticker;
+  const originalImage=Buffer.from(await (await fetch(imageUrl,{headers:mobile})).arrayBuffer());
+  assert.equal(originalImage.readUInt32BE(0),0x89504e47);
+  assert.equal((await fetch(worker.base+"/stickers",{headers:mobile})).status,404);
+  for(const [mode,answer] of [["only",""],["together","OK"]]){
+    const requestId=randomUUID(), phone=randomUUID(), question="sticker probe "+mode;
+    const result=(await send(question,requestId,phone)).at(-1);
+    assert.equal(result.done,true);assert.equal(result.answer,answer);assert.equal(result.stickerId,chosenSticker);
+    const calls=histories.length;
+    assert.deepEqual((await send(question,requestId,phone)).at(-1),result);
+    assert.equal(histories.length,calls);
+    assert.equal(db.page(null,null).at(-1)?.stickerId,chosenSticker);
+  }
+  const edit=await fetch(imageUrl,{method:"PUT",headers:admin,body:JSON.stringify({...library[0],active:false})});
+  assert.equal(edit.status,200);
+  assert.deepEqual(Buffer.from(await (await fetch(imageUrl,{headers:mobile})).arrayBuffer()),originalImage);
+  assert.equal(db.stickers.available(chosenSticker),false);
 
   const detachedSession = randomUUID(), detachedId = randomUUID();
   const detachedText = "detached transport probe";

@@ -118,6 +118,7 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
             </template>
             <small v-else>附件已过期</small>
           </div>
+          <img v-if="row.stickerId" :src="'/stickers/'+row.stickerId" alt="Piggy 的表情" width="112" height="112" style="object-fit:contain" loading="lazy">
           <p v-if="row.status !== 'complete'" class="state">{{ row.status === 'pending' ? '正在回复…' : '回复未完成' }}</p>
         </div>
       </article>

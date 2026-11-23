@@ -88,6 +88,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     }
 
     companion object {
+        val STICKER_ID = Regex("[0-9a-f]{24}")
         const val MAX_FILES = 4
         private fun objects(array: JSONArray) = List(array.length()) { array.getJSONObject(it) }
         fun turnFiles(turn: JSONObject): List<JSONObject> =
@@ -290,6 +291,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                 }) { http ->
                     var done = false
                     var replies: JSONArray? = null
+                    var stickerId = ""
                     val answer = StringBuilder()
                     http.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
                         for (line in lines) {
@@ -313,6 +315,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                                     answer.clear()
                                     answer.append(event.getString("answer"))
                                 }
+                                stickerId = event.optString("stickerId")
                                 replies = event.optJSONArray("replyFiles")
                                 done = true
                             }
@@ -325,6 +328,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                         files.forEach { ImagePreviews.save(context, it) }
                         turn.put("files", JSONArray(files))
                     }
+                    if (stickerId.matches(STICKER_ID)) turn.put("stickerId",stickerId)
                     replies?.let { turn.put("replyFiles", it) }
                     saved.put(turn)
                     val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
@@ -364,24 +368,35 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
 
     // Accessed by the preview and the background export worker.
     internal fun cachedReply(file: JSONObject): Uri {
-        pruneDownloads()
-        check(file.getLong("until") > System.currentTimeMillis()) { "附件已过期" }
         val key = file.getString("key")
-        require(key.matches(Regex("[0-9]{13}-[a-f0-9-]{36}")))
-        val directory = java.io.File(downloadDir, key)
+        val sticker = file.has("stickerId")
+        val directory: java.io.File
+        val url: String
+        if (sticker) {
+            require(key.matches(STICKER_ID) && file.getString("stickerId")==key)
+            directory = java.io.File(context.cacheDir, "stickers/" + key)
+            url = "/mobile/stickers/" + key
+        } else {
+            pruneDownloads()
+            check(file.getLong("until") > System.currentTimeMillis()) { "附件已过期" }
+            require(key.matches(Regex("[0-9]{13}-[a-f0-9-]{36}")))
+            directory = java.io.File(downloadDir, key)
+            url = "/mobile/reply-files/$session/$key"
+        }
         directory.mkdirs()
         val name = file.getString("name").substringAfterLast('/').substringAfterLast('\\')
         val cached = java.io.File(directory, name.takeUnless { it.isBlank() || it == "." || it == ".." } ?: "附件")
         if (!cached.isFile) {
             val temp = java.io.File.createTempFile("download-", ".part", directory)
-            val http = PiggyServer.url("/mobile/reply-files/$session/$key").openConnection() as HttpsURLConnection
+            val http = PiggyServer.url(url).openConnection() as HttpsURLConnection
             try {
                 http.connectTimeout = 15000
                 http.readTimeout = 60000
                 http.instanceFollowRedirects = false
                 check(http.responseCode == 200) { if (http.responseCode == 404) "附件已过期或不存在" else "下载失败，请重试" }
                 val size = temp.outputStream().use { out -> http.inputStream.use { it.copyTo(out) } }
-                check(size == file.getLong("size") && temp.renameTo(cached)) { "文件下载不完整，请重试" }
+                val expected = if (sticker) http.contentLength.toLong() else file.getLong("size")
+                check(size > 0 && expected == size && temp.renameTo(cached)) { "文件下载不完整，请重试" }
             } finally {
                 http.disconnect()
                 temp.delete()

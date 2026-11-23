@@ -542,7 +542,7 @@ class ChatActivity : Activity() {
             packageManager.canRequestPackageInstalls()) updater.install()
     }
 
-    private fun bubble(value: String, user: Boolean, files: List<JSONObject> = emptyList(), legacyLabel: String = ""): TextView {
+    private fun bubble(value: String, user: Boolean, files: List<JSONObject> = emptyList(), legacyLabel: String = "", stickerId: String = ""): TextView {
         empty.visibility = View.GONE
         val row = column().apply { gravity = if (user) Gravity.END else Gravity.START }
         if (!user) {
@@ -611,7 +611,7 @@ class ChatActivity : Activity() {
         if (user || files.isEmpty()) {
             group.addAttachments(files)
             if (value.isNotEmpty()) renderMessage(view, value)
-            if (files.isEmpty() || value.isNotEmpty()) group.addView(view, if (files.isEmpty()) wrap else match, wrap)
+            if (value.isNotEmpty() || (files.isEmpty() && stickerId.isEmpty())) group.addView(view, if (files.isEmpty()) wrap else match, wrap)
         } else {
             val anchors = replyPositions(value, files.map { it.optInt("inlineAt", -1) })
             var cursor = 0
@@ -625,6 +625,26 @@ class ChatActivity : Activity() {
                 group.addAttachments(items.map { files[it] })
             }
             addProse(value.length)
+        }
+        if (stickerId.matches(PiggyClient.STICKER_ID)) {
+            val file = JSONObject().put("key",stickerId).put("stickerId",stickerId).put("id",stickerId)
+                .put("name","Piggy-"+stickerId.take(8)+".png").put("mime","image/png")
+                .put("uri",PiggyServer.url("/mobile/stickers/"+stickerId).toString())
+            val sticker = ImageView(this).apply {
+                contentDescription = "Piggy 表情"
+                isFocusable = true
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setOnClickListener { openFile(file) }
+                setOnLongClickListener { attachmentActions.showMenu(file); true }
+            }
+            row.addView(sticker, LinearLayout.LayoutParams(dp(132),dp(132)).apply { topMargin=dp(3) })
+            client.fetchReply(file) { uri, error ->
+                if (!isDestroyed && uri != null) ImagePreviews.display(sticker,uri,"Piggy 表情")
+                else if (uri == null && !isDestroyed) {
+                    sticker.setImageResource(R.drawable.piggy_portrait)
+                    sticker.contentDescription = error ?: "表情暂时无法加载"
+                }
+            }
         }
         transcript.addView(row, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(15) })
         return view
@@ -689,7 +709,7 @@ class ChatActivity : Activity() {
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
             bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
-            bubble(turn.getString("answer"), false, client.replyFiles(turn))
+            bubble(turn.getString("answer"), false, client.replyFiles(turn),stickerId=turn.optString("stickerId"))
         }
     }
 

@@ -1,3 +1,4 @@
+import { StickerLibrary } from "./stickers.ts";
 import { CycleStore } from "./cycle.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -29,6 +30,7 @@ function keywordExcerpt(text:string, terms:string[], size:number) {
 
 export class Journal {
   private db: DatabaseSync;
+  readonly stickers:StickerLibrary;
   readonly cycles:CycleStore;
   readonly memories:MemoryStore;
   constructor(path: string) {
@@ -80,6 +82,9 @@ export class Journal {
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('local_files') WHERE name='provider_name'").get())
       this.db.exec("ALTER TABLE local_files ADD COLUMN provider_name TEXT");
+    this.stickers=new StickerLibrary(this.db);
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='sticker_id'").get())
+      this.db.exec("ALTER TABLE turns ADD COLUMN sticker_id TEXT REFERENCES stickers(id)");
     this.cycles=new CycleStore(this.db);
     this.memories=new MemoryStore(this.db);
     this.initializeContext();
@@ -250,7 +255,7 @@ export class Journal {
     this.db.prepare("DELETE FROM active_context WHERE conversation=? AND sequence<?").run(conversation,through);
   }
   lookup(conversation: string, request: string) {
-    return this.db.prepare("SELECT id,question,answer,status,attachment FROM turns WHERE conversation=? AND request=?").get(conversation,request);
+    return this.db.prepare("SELECT id,question,answer,status,attachment,sticker_id AS stickerId FROM turns WHERE conversation=? AND request=?").get(conversation,request);
   }
   begin(conversation: string, request: string, question: string, files: string[] = []) {
     this.db.exec("BEGIN");
@@ -266,11 +271,11 @@ export class Journal {
       throw error;
     }
   }
-  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = [], replacement?: ContextReplacement) {
+  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = [], replacement?: ContextReplacement, stickerId?:string) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const turn = this.db.prepare("UPDATE turns SET answer=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
-        .get(answer,id);
+      const turn = this.db.prepare("UPDATE turns SET answer=?,sticker_id=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
+        .get(answer,stickerId??null,id);
       if (!turn) throw new Error("Turn is no longer pending");
       this.db.prepare("DELETE FROM operation_receipts WHERE turn_id=?").run(id);
       if (replacement) this.replacePrefix(String(turn.conversation),replacement);
@@ -341,7 +346,7 @@ export class Journal {
   }
 
   page(after: number | null, before: number | null) {
-    const columns = `SELECT t.id,created,question,answer,status,a.name AS filename,a.size AS filesize,
+    const columns = `SELECT t.id,created,question,answer,status,t.sticker_id AS stickerId,a.name AS filename,a.size AS filesize,
       (SELECT json_group_array(json_patch(json_object('name',b.name,'size',b.size),
          CASE WHEN l.until>? THEN json_object('key',l.key,'until',l.until,'mime',l.mime) ELSE '{}' END) ORDER BY f.position)
        FROM turn_files f JOIN attachments b ON b.conversation=t.conversation AND b.id=f.attachment

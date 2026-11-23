@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
+import Stickers from "./Stickers.vue";
 import { renderSkillMarkdown } from "./markdown.js";
 
 const catalog = ref(null);
@@ -118,6 +119,7 @@ onUnmounted(() => controller.abort());
           </div>
         </form>
       </section>
+      <Stickers />
       <section aria-labelledby="skills-title">
         <h2 id="skills-title">Skills <span>{{ catalog.skills.length }}</span></h2>
         <p v-if="!catalog.skills.length" class="empty-note">当前服务端未加载任何技能。</p>

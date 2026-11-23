@@ -24,6 +24,8 @@ npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 node --experimental-strip-types --input-type=module -e 'import {loadSkills} from "./skill-loader.ts"; loadSkills("skills")'
 mkdir -p "$out/skills"
 cp -R skills/. "$out/skills/"
+mkdir -p "$out/starter-stickers"
+cp -R starter-stickers/. "$out/starter-stickers/"
 cd "$admin"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.releaseEnvironment=$environment" -o "$out/piggy-admin" .
 if [ "$environment" = production ]; then

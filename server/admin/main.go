@@ -30,7 +30,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 	expected := sha256.Sum256([]byte("piggy:" + password))
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
 		owner := "admin"
-		if pr.In.URL.Path == mobileReplyPhrases || pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext || pr.In.URL.Path == mobileCycle || strings.HasPrefix(pr.In.URL.Path, "/mobile/reply-files/") {
+		if pr.In.URL.Path == mobileReplyPhrases || pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext || pr.In.URL.Path == mobileCycle || strings.HasPrefix(pr.In.URL.Path, "/mobile/reply-files/") || strings.HasPrefix(pr.In.URL.Path, "/mobile/stickers/") {
 			owner = "mobile"
 		}
 		pr.SetURL(target)
@@ -64,7 +64,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			proxy.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/mobile/reply-files/") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if (strings.HasPrefix(r.URL.Path, "/mobile/reply-files/") || strings.HasPrefix(r.URL.Path, "/mobile/stickers/")) && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 			proxy.ServeHTTP(w, r)
 			return
 		}
@@ -95,6 +95,11 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 		if !ok || subtle.ConstantTimeCompare(actual[:], expected[:]) != 1 {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Piggy", charset="UTF-8"`)
 			fail(w, 401, "请登录 Piggy")
+			return
+		}
+		if r.URL.Path == "/stickers" || strings.HasPrefix(r.URL.Path, "/stickers/") {
+			r.Body = http.MaxBytesReader(w, r.Body, 1450000)
+			proxy.ServeHTTP(w, r)
 			return
 		}
 		if (r.URL.Path == "/reply-phrases" || r.URL.Path == "/model-settings") && r.Method == http.MethodPut {
