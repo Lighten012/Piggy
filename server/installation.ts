@@ -9,7 +9,7 @@ export class Installation {
   constructor(db: DatabaseSync) {
     this.db = db;
     this.db.exec(`CREATE TABLE IF NOT EXISTS mobile_installation(
-      id INTEGER PRIMARY KEY CHECK(id=1), key_hash TEXT NOT NULL, session TEXT NOT NULL, reg TEXT
+      id INTEGER PRIMARY KEY CHECK(id=1), key_hash TEXT NOT NULL, session TEXT NOT NULL
     )`);
   }
   private readonly db: DatabaseSync;

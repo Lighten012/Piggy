@@ -1,6 +1,6 @@
 import type { Installation } from "./installation.ts";
 import { Cron } from "croner";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { uuid } from "./attachments.ts";
@@ -23,15 +23,14 @@ export class Schedules {
     db.exec(`
       CREATE TABLE IF NOT EXISTS schedules(id TEXT PRIMARY KEY,name TEXT NOT NULL,session TEXT NOT NULL,cron TEXT NOT NULL,prompt TEXT NOT NULL,enabled INTEGER NOT NULL,next INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS scheduled_runs(request TEXT PRIMARY KEY,task TEXT NOT NULL,name TEXT NOT NULL,session TEXT NOT NULL,prompt TEXT NOT NULL,due INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'queued',push TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,retry INTEGER NOT NULL DEFAULT 0,UNIQUE(task,due));
+      status TEXT NOT NULL DEFAULT 'queued',UNIQUE(task,due));
       CREATE INDEX IF NOT EXISTS schedule_inbox ON scheduled_runs(session,request);`);
   }
   snapshot() {
     const session=this.installation.session()??"";
     return {connected:!!session,
       tasks:this.db.prepare("SELECT id,name,cron,prompt,enabled,next FROM schedules WHERE session IN (?,'') ORDER BY enabled DESC,next").all(session),
-      runs:this.db.prepare("SELECT name,due,status,push FROM scheduled_runs WHERE session=? ORDER BY due DESC,rowid DESC LIMIT 40").all(session),
-      configured:!!(process.env.VIVO_APP_ID && process.env.VIVO_APP_KEY && process.env.VIVO_APP_SECRET)};
+      runs:this.db.prepare("SELECT name,due,status FROM scheduled_runs WHERE session=? ORDER BY due DESC,rowid DESC LIMIT 40").all(session)};
   }
   save(data:any,id?:string) {
     if(typeof data?.prompt!=="string" || !data.prompt.trim() || data.prompt.length>1500 || typeof data.name!=="string" || !data.name.trim() || data.name.length>80 ||
@@ -57,9 +56,7 @@ export class Schedules {
     } catch(error) {this.db.exec("ROLLBACK");throw error;}
   }
   inbox(data:any) {
-    if(typeof data?.session!=="string" || !uuid.test(data.session) || !Number.isSafeInteger(data.after) || data.after<0 ||
-      (data.reg!=null && (typeof data.reg!=="string" || !/^[a-zA-Z0-9_:-]{12,200}$/.test(data.reg)))) throw new Error("设备参数无效");
-    this.db.prepare("UPDATE mobile_installation SET reg=? WHERE id=1 AND session=? AND reg IS NOT ?").run(data.reg??null,data.session,data.reg??null);
+    if(typeof data?.session!=="string" || !uuid.test(data.session) || !Number.isSafeInteger(data.after) || data.after<0) throw new Error("设备参数无效");
     return this.db.prepare(`SELECT t.id,t.answer,t.request,t.sticker_id AS stickerId FROM turns t JOIN scheduled_runs r ON t.request=r.request AND t.conversation=r.session
        WHERE t.conversation=? AND t.status='complete' AND t.id>? ORDER BY t.id LIMIT 40`).all(data.session,data.after);
   }
@@ -87,31 +84,4 @@ export async function scheduleRoute(store:Schedules,req:IncomingMessage,res:Serv
     } else {status=405;throw new Error("不支持此操作");}
   } catch(error) { if(status===200) status=400;result={error:error instanceof Error && !('code' in error)?error.message:"请求无效"}; }
   res.writeHead(status,{"Content-Type":"application/json"});res.end(JSON.stringify(result));
-}
-
-async function vivoPost(path:string,data:object,token?:string) {
-  const response=await fetch("https://api-push.vivo.com.cn/message/"+path,{method:"POST",headers:{"Content-Type":"application/json",...(token?{authToken:token}:{})},
-    body:JSON.stringify(data),signal:AbortSignal.timeout(8000)});
-  if(!response.ok) throw new Error("vivo HTTP "+response.status);
-  const body=await response.json();
-  if(body.result!==0) throw new Error("vivo "+Number(body.result));
-  return body;
-}
-let cachedToken:{value:string,until:number}|undefined;
-export async function sendVivo(reg:string,request:string,text:string) {
-  const key=process.env.VIVO_APP_KEY, secret=process.env.VIVO_APP_SECRET, appId=Number(process.env.VIVO_APP_ID);
-  if(!appId || !key || !secret) return "unconfigured";
-  const timestamp=Date.now();
-  if(!cachedToken || cachedToken.until<=timestamp) {
-    const sign=createHash("md5").update(String(appId)+key+timestamp+secret).digest("hex");
-    const {authToken}=await vivoPost("auth",{appId,appKey:key,timestamp,sign});
-    if(typeof authToken!=="string" || !authToken) throw new Error("vivo auth");
-    cachedToken={value:authToken,until:timestamp+3600000};
-  }
-  const preview=Array.from(text.trim().replace(/\s+/g," ")||"[表情]");
-  const title=preview.slice(0,16).join("");
-  await vivoPost("send",{appId,regId:reg,requestId:request.replaceAll("-",""),notifyType:1,skipType:1,
-    title:preview.length>16?title:"Piggy",content:preview.slice(preview.length>16?16:0,80).join(""),timeToLive:600,category:process.env.VIVO_CATEGORY||"SUBSCRIPTION",
-    pushMode:process.env.PIGGY_RELEASE_ENVIRONMENT==="production"?0:1},cachedToken.value);
-  return "accepted";
 }

@@ -235,12 +235,13 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     }
 
     private val inboxWorker = Executors.newSingleThreadExecutor()
-    fun syncInbox(finished: (Boolean) -> Unit) = inboxWorker.execute {
-        var changed = false
-        runCatching {
+    val inboxCursor: Long get() = prefs.getLong("inboxAfter", 0)
+
+    fun syncInbox(finished: (Boolean, Boolean) -> Unit) = inboxWorker.execute {
+        var newest: JSONObject? = null
+        val failure = runCatching {
             val after = prefs.getLong("inboxAfter", 0)
             val body = JSONObject().put("session", session).put("after", after)
-                .put("reg", VivoRegistration.token(context))
             post(PiggyServer.url("/mobile/inbox"), { http ->
                 http.setRequestProperty("Content-Type", "application/json")
                 http.outputStream.use { it.write(body.toString().toByteArray()) }
@@ -258,16 +259,22 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                         last = id
                         if (saved.length() > 40) evicted += saved.remove(0) as JSONObject
                     }
-                    if (last > cursor) changed = prefs.edit().putLong("inboxAfter", last)
-                        .putString("recent", saved.toString()).commit()
+                    if (last > cursor) {
+                        check(prefs.edit().putLong("inboxAfter", last).putString("recent", saved.toString()).commit())
+                        newest = saved.getJSONObject(saved.length() - 1)
+                    }
                 }
-                if (changed) for (turn in evicted) for (file in turnFiles(turn)) {
+                if (newest != null) for (turn in evicted) for (file in turnFiles(turn)) {
                     ImagePreviews.discard(context, file.getString("id"))
                     releaseFile(file)
                 }
             }
+        }.exceptionOrNull()
+        // A stopped JobService can race the durable commit. Deliver committed messages even if the job closed its client.
+        main.post {
+            newest?.let { ReplyNotifications.onReplySaved(context, it) }
+            if (!closed) finished(newest != null, failure is HttpFailure && (failure.status == 403 || failure.status == 426))
         }
-        ui { finished(changed) }
     }
 
     private fun usage(json: JSONObject): ContextUsage {

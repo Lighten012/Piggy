@@ -8,12 +8,6 @@ if (!(environment in ['staging', 'production'])) {
     throw new GradleException('piggyEnvironment must be staging or production')
 }
 def staging = environment == 'staging'
-def vivoPrefix = staging ? 'PIGGY_STAGING_VIVO_' : 'PIGGY_PRODUCTION_VIVO_'
-def vivoId = System.getenv(vivoPrefix + 'APP_ID')
-def vivoKey = System.getenv(vivoPrefix + 'APP_KEY')
-def vivoSdk = System.getenv('PIGGY_VIVO_AAR')
-def vivo = vivoId && vivoKey && vivoSdk
-if ((vivoId || vivoKey) && !vivo) throw new GradleException('Missing vivo client configuration')
 def officeAbi = providers.gradleProperty('officeAbi').orElse('arm64-v8a')
 def officeAssets = layout.buildDirectory.dir('office/assets')
 def prepareOffice = tasks.register('prepareOffice', Exec) {
@@ -29,21 +23,15 @@ android {
     namespace 'dev.pichat'
     compileSdk 36
     sourceSets.main.assets.srcDir(officeAssets)
-    sourceSets.main.java.srcDir(vivo ? 'src/vivo/java' : 'src/noVivo/java')
-    if (vivo) {
-        sourceSets.debug.manifest.srcFile('src/vivo/AndroidManifest.xml')
-        sourceSets.release.manifest.srcFile('src/vivo/AndroidManifest.xml')
-    }
     buildFeatures { buildConfig = true }
     defaultConfig {
         applicationId staging ? 'dev.pichat.staging' : 'dev.pichat'
         resValue 'string', 'app_name', staging ? 'Piggy 测试版' : 'Piggy'
         buildConfigField 'String', 'SERVER_ORIGIN', staging ? '"https://38.14.232.112:8889"' : '"https://38.14.232.112:8888"'
-        if (vivo) manifestPlaceholders = [vivoAppId:vivoId, vivoAppKey:vivoKey]
         minSdk 24
         targetSdk 36
-        versionCode staging ? 48 : 26
-        versionName staging ? '0.16.0-test.2' : '0.14.0'
+        versionCode staging ? 49 : 26
+        versionName staging ? '0.16.0-test.3' : '0.14.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -53,7 +41,6 @@ android {
 kotlin { jvmToolchain(17); compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
 dependencies {
-    if (vivo) implementation files(vivoSdk)
     testImplementation "junit:junit:4.13.2"
     implementation "com.github.bumptech.glide:glide:4.16.0"
     implementation "androidx.core:core:1.13.1"

@@ -1,4 +1,4 @@
-import { scheduleRoute,sendVivo } from "./schedules.ts";
+import { scheduleRoute } from "./schedules.ts";
 import { stickerRequest,stickerTool } from "./stickers.ts";
 import { cycleTools, localToday } from "./cycle.ts";
 import { persona } from "./persona.ts";
@@ -530,7 +530,7 @@ server.listen(Number(process.env.PORT || 18889), host, () => {
 
 function startSchedules(port:number) {
   const store=journal.schedules, db=store.db;
-  let working=false, pushing=false;
+  let working=false;
   async function generate() {
     const run=db.prepare("SELECT * FROM scheduled_runs WHERE status='queued' AND session=(SELECT session FROM mobile_installation WHERE id=1) ORDER BY due LIMIT 1").get();
     if(!run) return;
@@ -554,22 +554,8 @@ function startSchedules(port:number) {
     if(turn?.status==="pending") return;
     db.prepare("UPDATE scheduled_runs SET status=? WHERE request=?").run(turn?.status==="complete"?"generated":"failed",run.request);
   }
-  async function push() {
-    const run=db.prepare(`SELECT r.request,r.attempts,r.due,d.reg,t.answer FROM scheduled_runs r JOIN mobile_installation d ON r.session=d.session
-      JOIN turns t ON t.conversation=r.session AND t.request=r.request
-      WHERE r.status='generated' AND r.push='pending' AND r.retry<=? ORDER BY r.due LIMIT 1`).get(Date.now());
-    if(!run) return;
-    let state="unconfigured";
-    try {
-      if(Date.now()-Number(run.due)>600000) state="expired";
-      else if(process.env.VIVO_APP_ID && process.env.VIVO_APP_KEY && process.env.VIVO_APP_SECRET)
-        state=run.reg ? await sendVivo(String(run.reg),String(run.request),String(run.answer)) : "unregistered";
-    } catch { state=Number(run.attempts)>=2 ? "failed" : "pending"; }
-    db.prepare("UPDATE scheduled_runs SET push=?,attempts=attempts+1,retry=? WHERE request=?").run(state,Date.now()+15000*(Number(run.attempts)+1),run.request);
-  }
   setInterval(()=>{
     try {store.enqueue(Date.now());} catch {console.warn("Schedule queue unavailable");}
     if(!working) {working=true;void generate().catch(()=>console.warn("Scheduled generation interrupted")).finally(()=>{working=false;});}
-    if(!pushing) {pushing=true;void push().catch(()=>console.warn("Scheduled push interrupted")).finally(()=>{pushing=false;});}
   },2000).unref();
 }

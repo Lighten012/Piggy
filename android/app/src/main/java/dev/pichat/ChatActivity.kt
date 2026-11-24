@@ -466,11 +466,12 @@ class ChatActivity : Activity() {
             else if (!generating) renderHistory()
             chat.removeCallbacks(refreshPhrases)
             refreshPhrases.run()
-            pollInbox.run()
+            startInbox()
             refreshContext()
             toBottom()
             return
         }
+        ScheduledInbox.suspendPolling(this)
         gateProgress.visibility = if (state == UpdateState.Checking || state is UpdateState.Preparing) View.VISIBLE else View.GONE
         gateDownload.visibility = if (state is UpdateState.Downloading) View.VISIBLE else View.GONE
         gateAction.visibility = View.GONE
@@ -719,6 +720,7 @@ class ChatActivity : Activity() {
     private fun renderHistory() {
         transcript.removeViews(1, transcript.childCount - 1)
         empty.visibility = View.VISIBLE
+        renderedInbox = client.inboxCursor
         val recent = client.recent
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
@@ -729,26 +731,21 @@ class ChatActivity : Activity() {
 
     private var replyWait: ReplyWait? = null
     private var chatVisible = false
-    private var checkingInbox = false
-    private val pollInbox = object : Runnable {
-        override fun run() {
-            chat.removeCallbacks(this)
-            if (!chatVisible || !versionCurrent || checkingInbox) return
-            if (generating || client.inFlight) {
-                chat.postDelayed(this, 3000)
-                return
-            }
-            checkingInbox = true
-            client.syncInbox { changed ->
-                checkingInbox = false
-                if (changed && chatVisible && !generating && !client.inFlight) {
-                    renderHistory()
-                    toBottom()
-                    refreshContext()
-                }
-                if (chatVisible) chat.postDelayed(this, if (changed) 500 else 15000)
-            }
+    private var renderedInbox = -1L
+    private val inboxUpdated: () -> Unit = {
+        if (chatVisible && versionCurrent && !generating && !client.inFlight && renderedInbox != client.inboxCursor) {
+            renderHistory()
+            toBottom()
+            refreshContext()
         }
+    }
+    private val inboxRejected: () -> Unit = { updater.check() }
+
+    private fun startInbox() {
+        if (!versionCurrent || !chatVisible) return
+        ReplyNotifications.askOnce(this)
+        ScheduledInbox.start(this, inboxUpdated, inboxRejected)
+        inboxUpdated()
     }
     private val refreshPhrases = object : Runnable {
         override fun run() {
@@ -760,15 +757,14 @@ class ChatActivity : Activity() {
         chatVisible = true
         ReplyNotifications.chatStarted(this)
         if (versionCurrent) refreshPhrases.run()
-        VivoRegistration.resume(this)
-        pollInbox.run()
+        startInbox()
         replyWait?.visible(true)
     }
     override fun onStop() {
         chatVisible = false
         ReplyNotifications.chatStopped()
         chat.removeCallbacks(refreshPhrases)
-        chat.removeCallbacks(pollInbox)
+        ScheduledInbox.hide(inboxUpdated)
         replyWait?.visible(false)
         super.onStop()
     }
