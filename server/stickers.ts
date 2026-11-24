@@ -7,6 +7,9 @@ import type {AgentTool} from "@earendil-works/pi-agent-core";
 
 const maxBytes=1024*1024;
 const maxActive=64;
+// IDs of the five PNGs distributed with seed version 1, independent of admin renames.
+const originalStarters = ["ed9e8156739f8d5103669ce6","89022b055fdd0568ea98505b","6834e4b7ff89dabd90039ca6","c5d4ade90643fb94985637df","9a035ae598188ac7937168d5"];
+const historyOnly = -1;
 export const stickerId=/^[a-f0-9]{24}$/;
 interface Sticker { id:string; name:string; description:string; active:number }
 function label(value:unknown,max:number) {
@@ -23,17 +26,27 @@ export class StickerLibrary {
   }
   seed(directory:URL) {
     this.db.exec("CREATE TABLE IF NOT EXISTS sticker_seeds(version INTEGER PRIMARY KEY)");
-    if(this.db.prepare("SELECT 1 FROM sticker_seeds WHERE version=1").get()) return;
-    const entries=JSON.parse(readFileSync(new URL("index.json",directory),"utf8"));
+    if(this.db.prepare("SELECT 1 FROM sticker_seeds WHERE version=2").get()) return;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      for(const entry of entries) this.add(entry.name,entry.description,readFileSync(new URL(entry.file,directory)));
-      this.db.prepare("INSERT INTO sticker_seeds VALUES(1)").run();
+      if(!this.db.prepare("SELECT 1 FROM sticker_seeds WHERE version=2").get()) {
+        if(this.db.prepare("SELECT 1 FROM sticker_seeds WHERE version=1").get()) {
+          const remove=this.db.prepare("DELETE FROM stickers WHERE id=? AND NOT EXISTS(SELECT 1 FROM turns WHERE sticker_id=stickers.id)");
+          const archive=this.db.prepare("UPDATE stickers SET active=? WHERE id=?");
+          for(const id of originalStarters) {
+            remove.run(id);
+            archive.run(historyOnly,id);
+          }
+        }
+        const entries=JSON.parse(readFileSync(new URL("index.json",directory),"utf8"));
+        for(const entry of entries) this.store(entry.name,entry.description,readFileSync(new URL(entry.file,directory)),true);
+        this.db.exec("INSERT OR IGNORE INTO sticker_seeds VALUES(1),(2)");
+      }
       this.db.exec("COMMIT");
     } catch(error){this.db.exec("ROLLBACK");throw error;}
   }
   list(activeOnly=false) {
-    return this.db.prepare("SELECT id,name,description,active FROM stickers"+(activeOnly?" WHERE active=1":"")+" ORDER BY rowid").all() as unknown as Sticker[];
+    return this.db.prepare("SELECT id,name,description,active FROM stickers"+(activeOnly?" WHERE active=1":" WHERE active IN (0,1)")+" ORDER BY rowid").all() as unknown as Sticker[];
   }
   image(id:string) { return this.db.prepare("SELECT image FROM stickers WHERE id=?").get(id)?.image as Uint8Array|undefined; }
   available(id:string) { return !!this.db.prepare("SELECT 1 FROM stickers WHERE id=? AND active=1").get(id); }
@@ -42,8 +55,10 @@ export class StickerLibrary {
       throw new Error("最多可同时上架 64 张表情");
   }
   add(name:unknown,description:unknown,bytes:Buffer) {
+    return this.store(name,description,bytes,false);
+  }
+  private store(name:unknown,description:unknown,bytes:Buffer,seed:boolean) {
     const title=label(name,24), usage=label(description,96);
-    this.checkCapacity();
     if(bytes.length<33 || bytes.length>maxBytes || bytes.toString("hex",0,8)!=="89504e470d0a1a0a" ||
         bytes.toString("ascii",12,16)!=="IHDR" || bytes.readUInt32BE(16)>512 || bytes.readUInt32BE(20)>512)
       throw new Error("请使用 512 像素以内的 PNG 表情");
@@ -51,15 +66,18 @@ export class StickerLibrary {
     try { image=PNG.sync.write(PNG.sync.read(bytes)); }
     catch { throw new Error("图片无法读取"); }
     const id=createHash("sha256").update(image).digest("hex").slice(0,24);
-    if(this.db.prepare("SELECT 1 FROM stickers WHERE id=?").get(id)) throw new Error("图片已在表情库中，可直接编辑或重新上架");
-    this.db.prepare("INSERT INTO stickers VALUES(?,?,?,1,?)").run(id,title,usage,image);
+    const existing=this.db.prepare("SELECT active FROM stickers WHERE id=?").get(id);
+    if(existing && !seed && existing.active!==historyOnly) throw new Error("图片已在表情库中，可直接编辑或重新上架");
+    if(existing?.active!==1) this.checkCapacity();
+    this.db.prepare(`INSERT INTO stickers VALUES(?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET
+      name=excluded.name,description=excluded.description,active=1`).run(id,title,usage,image);
     return id;
   }
   edit(id:string,name:unknown,description:unknown,active:unknown) {
     const title=label(name,24), usage=label(description,96);
     if(typeof active!=="boolean") throw new Error("无效的上架状态");
     if(active && !this.available(id)) this.checkCapacity();
-    if(!this.db.prepare("UPDATE stickers SET name=?,description=?,active=? WHERE id=?").run(title,usage,Number(active),id).changes)
+    if(!this.db.prepare("UPDATE stickers SET name=?,description=?,active=? WHERE id=? AND active IN (0,1)").run(title,usage,Number(active),id).changes)
       throw new Error("表情不存在");
   }
 }

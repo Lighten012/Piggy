@@ -1,7 +1,37 @@
 [
-  {"file":"peek.png","name":"小猪探头","description":"悄悄探出头打个招呼，适合她刚出现、问你在不在。"},
-  {"file":"hug.png","name":"贴贴抱抱","description":"张开小蹄子送一个抱抱，适合想念、撒娇或她主动讨抱抱。"},
-  {"file":"proud.png","name":"小猪得意","description":"开心举蹄庆祝，适合她完成一件事或你们开玩笑邀功。"},
-  {"file":"listen.png","name":"我在听","description":"抱着靠垫安静地陪着，适合她想找人倾诉。"},
-  {"file":"sleep.png","name":"卷卷晚安","description":"戴着睡帽蜷起来，适合道晚安、准备一起休息。"}
+  {
+    "file": "kiss.png",
+    "name": "亲亲对接成功",
+    "description": "两只小猪鼻尖碰鼻尖，亲亲对接成功。适合回应飞吻、想你了，或主动凑过来亲一下。"
+  },
+  {
+    "file": "innocent.png",
+    "name": "猪没干坏事",
+    "description": "小猪趴着，偷偷抬眼看你。适合被打趣或误会时，替自己委屈巴巴地辩一句「猪没干坏事嘛」。"
+  },
+  {
+    "file": "lazy.png",
+    "name": "慵懒型猪格",
+    "description": "小猪把脑袋搁在软垫上，只露出一张懒洋洋的脸。适合赖床、发呆，或想一起瘫一会儿。"
+  },
+  {
+    "file": "bedtime.png",
+    "name": "猪睡觉了",
+    "description": "小猪裹在粉色毯子里，闭着眼睛睡得很香。适合说晚安、午睡，或困得要收起手机时发。"
+  },
+  {
+    "file": "sulky.png",
+    "name": "猪不开心",
+    "description": "小猪独自坐在地上，耷拉着耳朵。适合表达一点失落、闹点小别扭，或撒娇求哄。"
+  },
+  {
+    "file": "tears.png",
+    "name": "猪好难过",
+    "description": "小猪仰着脸，两道蓝色眼泪哗哗往下流。适合难过到想哭，或用夸张哭哭的口吻求抱抱。"
+  },
+  {
+    "file": "fond.png",
+    "name": "我稀饭你",
+    "description": "戴着彩色小绳的小猪仰脸望着你，用「我稀饭你」软乎乎地说喜欢。适合表白或回应对方的喜欢。"
+  }
 ]

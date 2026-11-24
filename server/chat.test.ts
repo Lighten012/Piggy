@@ -408,7 +408,7 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.ok(transientCounts >= 2);
 
   const library=await (await fetch(worker.base+"/stickers",{headers:admin})).json();
-  assert.equal(library.length,5);
+  assert.equal(library.length,7);
   chosenSticker=library[0].id;
   const imageUrl=worker.base+"/stickers/"+chosenSticker;
   const originalImage=Buffer.from(await (await fetch(imageUrl,{headers:mobile})).arrayBuffer());
