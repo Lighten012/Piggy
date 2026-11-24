@@ -20,7 +20,7 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.URL.Path != "/schedules" && r.URL.Path != "/inbox" && r.URL.Path != "/stickers/x" && r.URL.Path != "/stickers" && r.URL.Path != "/reply-phrases" && r.URL.Path != "/model-settings" && r.URL.Path != "/capabilities" && r.URL.Path != "/chat" && r.URL.Path != "/context" && r.URL.Path != "/cycle" && r.URL.Path != "/history" && r.URL.Path != "/attachments" && r.URL.Path != "/history/files/test") || r.Header.Get("Authorization") != "Bearer internal" {
+		if (r.URL.Path != "/connect" && r.URL.Path != "/schedules" && r.URL.Path != "/inbox" && r.URL.Path != "/stickers/x" && r.URL.Path != "/stickers" && r.URL.Path != "/reply-phrases" && r.URL.Path != "/model-settings" && r.URL.Path != "/capabilities" && r.URL.Path != "/chat" && r.URL.Path != "/context" && r.URL.Path != "/cycle" && r.URL.Path != "/history" && r.URL.Path != "/attachments" && r.URL.Path != "/history/files/test") || r.Header.Get("Authorization") != "Bearer internal" {
 			t.Error("unexpected upstream request")
 		}
 		w.Header().Set("X-Test-Owner", r.Header.Get("X-Piggy-Owner"))
@@ -34,7 +34,7 @@ func TestPublicMobileAndAuthenticatedWeb(t *testing.T) {
 		want         int
 		owner        string
 	}{
-		{"POST", "/mobile/inbox", false, 200, "mobile"}, {"POST", "/schedules", false, 401, ""}, {"POST", "/schedules", true, 200, "admin"},
+		{"POST", "/mobile/connect", false, 200, "mobile"}, {"GET", "/mobile/connect", false, 405, ""}, {"POST", "/mobile/inbox", false, 200, "mobile"}, {"POST", "/schedules", false, 401, ""}, {"POST", "/schedules", true, 200, "admin"},
 		{"GET", "/mobile/stickers/x", false, 200, "mobile"}, {"HEAD", "/mobile/stickers/x", false, 200, "mobile"},
 		{"POST", "/mobile/stickers/x", false, 401, ""}, {"GET", "/stickers", false, 401, ""},
 		{"POST", "/stickers", true, 200, "admin"}, {"PUT", "/stickers/x", true, 200, "admin"},

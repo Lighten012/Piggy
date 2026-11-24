@@ -187,6 +187,40 @@ test("records accepted mobile turns and restores context after restart", async t
   const auth = {authorization:"Bearer fixture-worker","content-type":"application/json"};
   const mobile = {...auth,"x-piggy-owner":"mobile"}, admin = {...auth,"x-piggy-owner":"admin"};
   const session = randomUUID();
+  let installation=randomUUID();
+  const ownerHeaders={...mobile,"x-piggy-session":session,"x-piggy-installation":installation};
+  const rawFetch=globalThis.fetch;
+  const claim=(headers:Record<string,string>)=>rawFetch(worker.base+"/connect",{method:"POST",headers});
+  assert.equal((await rawFetch(worker.base+"/reply-phrases",{headers:ownerHeaders})).status,403);
+  const otherHeaders={...ownerHeaders,"x-piggy-installation":randomUUID()};
+  const race=await Promise.all([claim(ownerHeaders),claim(otherHeaders)]);
+  assert.deepEqual(race.map(response=>response.status).sort(),[204,403]);
+  if(race[0].status!==204) {
+    ownerHeaders["x-piggy-installation"]=otherHeaders["x-piggy-installation"];
+    otherHeaders["x-piggy-installation"]=installation;
+    installation=ownerHeaders["x-piggy-installation"];
+  }
+  assert.equal((await claim(ownerHeaders)).status,204);
+  assert.equal((await claim(otherHeaders)).status,403);
+  for(const endpoint of ["reply-phrases","stickers/abc","reply-files/"+session+"/x","chat","attachments","inbox","cycle","context"]) {
+    assert.equal((await rawFetch(worker.base+"/"+endpoint,{method:endpoint.includes("/")||endpoint==="reply-phrases"?"GET":"POST",headers:otherHeaders})).status,403);
+  }
+  assert.equal((await rawFetch(worker.base+"/context",{method:"POST",headers:ownerHeaders,body:JSON.stringify({session:randomUUID()})})).status,403);
+  // The remaining legacy transcript fixtures intentionally use independent conversations.
+  // Select each scenario's owner directly in this disposable DB before exercising its real mobile routes.
+  const fixtureDB=new DatabaseSync(join(dir,"test.sqlite"));
+  t.after(()=>fixtureDB.close());
+  async function fetch(url:string,options:RequestInit={}) {
+    const headers=new Headers(options.headers);
+    if(headers.get("x-piggy-owner")==="mobile") {
+      const body=typeof options.body==="string" && options.body.startsWith("{")?JSON.parse(options.body):{};
+      const conversation=headers.get("x-piggy-session") ?? body.session ?? session;
+      fixtureDB.prepare("UPDATE mobile_installation SET session=? WHERE id=1 AND session!=?").run(conversation,conversation);
+      headers.set("x-piggy-session",conversation);
+      headers.set("x-piggy-installation",installation);
+    }
+    return rawFetch(url,{...options,headers});
+  }
   async function send(text:string, request = randomUUID(), context = session) {
     const res = await fetch(worker.base+"/chat",{method:"POST",headers:mobile,body:JSON.stringify({text,session:context,request})});
     assert.equal(res.status,200);
@@ -216,6 +250,8 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.ok((await send("failed")).at(-1).error);
   const stopped = once(worker.child,"exit");worker.child.kill();await stopped;
   worker = await start();
+  assert.equal((await claim(otherHeaders)).status,403);
+  assert.equal((await claim(ownerHeaders)).status,204);
   assert.equal((await send("two")).at(-1).session,session);
   assert.deepEqual(histories[2],["one","two"]);
   await send("separate",randomUUID(),randomUUID());
@@ -426,8 +462,8 @@ test("records accepted mobile turns and restores context after restart", async t
     const inbox=async (session:string,after=0)=>(await (await fetch(worker.base+"/inbox",{method:"POST",headers:mobile,
       body:JSON.stringify({session,model:"fixture",after})})).json()).messages;
     assert.deepEqual(await inbox(phone),[]);
-    const task={session:phone,name:"早安",cron:"0 8 * * *",prompt:"settings-probe scheduled",enabled:true};
-    assert.equal((await fetch(worker.base+"/schedules",{method:"POST",headers:mobile,body:JSON.stringify(task)})).status,403);
+    const task={name:"早安",cron:"0 8 * * *",prompt:"settings-probe scheduled",enabled:true};
+    assert.equal((await fetch(worker.base+"/schedules",{method:"POST",headers:{...mobile,"x-piggy-session":phone},body:JSON.stringify(task)})).status,403);
     assert.equal((await fetch(worker.base+"/schedules",{method:"POST",headers:admin,body:JSON.stringify(task)})).status,200);
     const schedulesDB=new DatabaseSync(join(dir,"test.sqlite"));
     schedulesDB.prepare("UPDATE schedules SET next=?").run(Date.now()-1);
@@ -437,7 +473,7 @@ test("records accepted mobile turns and restores context after restart", async t
     }
     assert.equal(messages.length,1);
     assert.equal(messages[0].answer,"OK");
-    assert.deepEqual(await inbox(other),[]);
+    assert.equal((await rawFetch(worker.base+"/inbox",{method:"POST",headers:{...otherHeaders,"x-piggy-session":other},body:JSON.stringify({session:other,after:0})})).status,403);
     assert.deepEqual(await inbox(phone,messages[0].id),[]);
     const transcript=schedulesDB.prepare("SELECT question,status FROM turns WHERE conversation=?").get(phone);
     assert.equal(transcript?.question,"");

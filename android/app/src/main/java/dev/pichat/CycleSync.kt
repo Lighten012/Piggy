@@ -81,7 +81,7 @@ internal object CycleSync {
                     JSONArray().apply { for (i in 0 until minOf(100, pending.length())) put(pending.get(i)) }
                 }
                 val request = JSONObject().put("session", session(context)).put("timeZone", TimeZone.getDefault().id).put("changes", batch)
-                val http = PiggyServer.url("/mobile/cycle").openConnection() as HttpsURLConnection
+                val http = PiggyServer.mobile(context, PiggyServer.url("/mobile/cycle"))
                 val state = try {
                     http.requestMethod = "POST"
                     http.doOutput = true

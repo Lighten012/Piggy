@@ -217,6 +217,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
   let data;
   try { data = JSON.parse(Buffer.concat(chunks).toString()); }
   catch { return reject(res, 400, "请求格式有误"); }
+  if (!proactive && data?.session !== req.headers["x-piggy-session"]) return reject(res,403,"对话编号与当前安装不符");
   const settings = activeSettings();
   const model = resolveModel(settings,baseUrl);
   if (preview) {
@@ -426,6 +427,7 @@ async function syncCycle(req:IncomingMessage,res:ServerResponse) {
   }
   const data=JSON.parse(Buffer.concat(chunks).toString());
   if(typeof data?.session!=="string"||!uuid.test(data.session)) return reject(res,400,"对话编号无效");
+  if(data.session!==req.headers["x-piggy-session"]) return reject(res,403,"对话编号与当前安装不符");
   const state=journal.cycles.sync(data.session,data.changes,localToday(data.timeZone));
   res.writeHead(200,{"Content-Type":"application/json"});
   res.end(JSON.stringify(state));
@@ -436,6 +438,11 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if (!timingSafeEqual(digest(req.headers.authorization || ""), workerAuth)) return reject(res,401,"身份无效");
   const url = new URL(req.url || "/", "http://localhost");
+  if(req.headers["x-piggy-owner"]==="mobile") {
+    const claim=url.pathname==="/connect" && req.method==="POST";
+    if(!journal.installation.admit(req,claim)) return reject(res,403,"此环境仅允许一个 Piggy 安装连接。请使用已绑定的安装。");
+    if(claim) {res.writeHead(204);return res.end();}
+  }
   if (url.pathname === "/inbox" || url.pathname === "/schedules" || url.pathname.startsWith("/schedules/")) {
     void scheduleRoute(journal.schedules,req,res,url.pathname,id=>journal.replyFiles(id)).catch(()=>reject(res,500,"服务暂时不可用"));
     return;
@@ -472,7 +479,7 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname.startsWith("/reply-files/") && req.headers["x-piggy-owner"] === "mobile" &&
       (req.method === "GET" || req.method === "HEAD")) {
     const [, , conversation,key,...extra] = url.pathname.split("/");
-    if (!uuid.test(conversation) || !key || extra.length) return reject(res,404,"附件不存在");
+    if (conversation!==req.headers["x-piggy-session"] || !uuid.test(conversation) || !key || extra.length) return reject(res,404,"附件不存在");
     void retention.serve(journal,key,false,req.method === "HEAD",res,conversation).catch(() => {
       if (!res.headersSent) reject(res,500,"附件暂时无法读取"); else res.destroy();
     });
@@ -525,7 +532,7 @@ function startSchedules(port:number) {
   const store=journal.schedules, db=store.db;
   let working=false, pushing=false;
   async function generate() {
-    const run=db.prepare("SELECT * FROM scheduled_runs WHERE status='queued' ORDER BY due LIMIT 1").get();
+    const run=db.prepare("SELECT * FROM scheduled_runs WHERE status='queued' AND session=(SELECT session FROM mobile_installation WHERE id=1) ORDER BY due LIMIT 1").get();
     if(!run) return;
     const existing=journal.lookup(String(run.session),String(run.request));
     if(!existing && Date.now()-Number(run.due)>600000) {
@@ -548,7 +555,7 @@ function startSchedules(port:number) {
     db.prepare("UPDATE scheduled_runs SET status=? WHERE request=?").run(turn?.status==="complete"?"generated":"failed",run.request);
   }
   async function push() {
-    const run=db.prepare(`SELECT r.request,r.attempts,r.due,d.reg,t.answer FROM scheduled_runs r JOIN schedule_devices d ON r.session=d.session
+    const run=db.prepare(`SELECT r.request,r.attempts,r.due,d.reg,t.answer FROM scheduled_runs r JOIN mobile_installation d ON r.session=d.session
       JOIN turns t ON t.conversation=r.session AND t.request=r.request
       WHERE r.status='generated' AND r.push='pending' AND r.retry<=? ORDER BY r.due LIMIT 1`).get(Date.now());
     if(!run) return;

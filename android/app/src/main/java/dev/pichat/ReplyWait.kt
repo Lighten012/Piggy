@@ -44,7 +44,7 @@ internal object ReplyPhrases {
             fetching = true
             Thread {
                 try {
-                    val http = PiggyServer.url("/mobile/reply-phrases").openConnection() as HttpsURLConnection
+                    val http = PiggyServer.mobile(context, PiggyServer.url("/mobile/reply-phrases"))
                     try {
                         http.connectTimeout = 5000
                         http.readTimeout = 5000

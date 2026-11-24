@@ -42,8 +42,8 @@ android {
         if (vivo) manifestPlaceholders = [vivoAppId:vivoId, vivoAppKey:vivoKey]
         minSdk 24
         targetSdk 36
-        versionCode staging ? 47 : 26
-        versionName staging ? '0.16.0-test.1' : '0.14.0'
+        versionCode staging ? 48 : 26
+        versionName staging ? '0.16.0-test.2' : '0.14.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

@@ -187,7 +187,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     }
 
     private fun post(url: URL, write: (HttpsURLConnection) -> Unit, consume: (HttpsURLConnection) -> Unit) {
-        val http = url.openConnection() as HttpsURLConnection
+        val http = PiggyServer.mobile(context, url)
         connections.add(http)
         try {
             if (closed) throw IOException("连接已关闭")
@@ -240,7 +240,6 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         runCatching {
             val after = prefs.getLong("inboxAfter", 0)
             val body = JSONObject().put("session", session).put("after", after)
-                .put("model", android.os.Build.MODEL.take(100))
                 .put("reg", VivoRegistration.token(context))
             post(PiggyServer.url("/mobile/inbox"), { http ->
                 http.setRequestProperty("Content-Type", "application/json")
@@ -439,7 +438,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         val cached = java.io.File(directory, name.takeUnless { it.isBlank() || it == "." || it == ".." } ?: "附件")
         if (!cached.isFile) {
             val temp = java.io.File.createTempFile("download-", ".part", directory)
-            val http = PiggyServer.url(url).openConnection() as HttpsURLConnection
+            val http = PiggyServer.mobile(context, PiggyServer.url(url))
             try {
                 http.connectTimeout = 15000
                 http.readTimeout = 60000

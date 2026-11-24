@@ -1,3 +1,4 @@
+import { Installation } from "./installation.ts";
 import { Schedules } from "./schedules.ts";
 import { StickerLibrary } from "./stickers.ts";
 import { CycleStore } from "./cycle.ts";
@@ -30,6 +31,7 @@ function keywordExcerpt(text:string, terms:string[], size:number) {
 }
 
 export class Journal {
+  readonly installation:Installation;
   readonly schedules:Schedules;
   private db: DatabaseSync;
   readonly stickers:StickerLibrary;
@@ -37,7 +39,8 @@ export class Journal {
   readonly memories:MemoryStore;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
-    this.schedules = new Schedules(this.db);
+    this.installation = new Installation(this.db);
+    this.schedules = new Schedules(this.db,this.installation);
     this.db.exec(`
       PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS reply_phrases (

@@ -1,3 +1,4 @@
+import { Installation } from "./installation.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -10,14 +11,16 @@ test("Shanghai cron, task controls and replay of a due tick",()=>{
   assert.equal(nextOccurrence("0 8 * * 1-5",now),Date.parse("2026-11-23T00:00:00Z"));
   assert.throws(()=>nextOccurrence("0 0 8 * * *",now));
   const db=new DatabaseSync(":memory:");
-  const schedules=new Schedules(db);
+  const schedules=new Schedules(db,new Installation(db));
   const session=randomUUID();
-  db.prepare("INSERT INTO schedule_devices(session,model,seen) VALUES(?,'device',?)").run(session,now);
-  const task={name:"morning",session,prompt:"say hi",cron:"0 8 * * *",enabled:false};
+
+  const task={name:"morning",prompt:"say hi",cron:"0 8 * * *",enabled:false};
   schedules.save(task);
   db.prepare("UPDATE schedules SET next=?").run(now);
   schedules.enqueue(now);
   assert.equal(schedules.snapshot().runs.length,0);
+  assert.equal(schedules.snapshot().connected,false);
+  db.prepare("INSERT INTO mobile_installation(id,key_hash,session) VALUES(1,'fixture',?)").run(session);
   schedules.save({...task,enabled:true},String(schedules.snapshot().tasks[0].id));
   db.prepare("UPDATE schedules SET next=?").run(now);
   schedules.enqueue(now);

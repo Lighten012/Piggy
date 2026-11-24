@@ -30,7 +30,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 	expected := sha256.Sum256([]byte("piggy:" + password))
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
 		owner := "admin"
-		if pr.In.URL.Path == mobileReplyPhrases || pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext || pr.In.URL.Path == mobileCycle || pr.In.URL.Path == "/mobile/inbox" || strings.HasPrefix(pr.In.URL.Path, "/mobile/reply-files/") || strings.HasPrefix(pr.In.URL.Path, "/mobile/stickers/") {
+		if pr.In.URL.Path == mobileReplyPhrases || pr.In.URL.Path == mobileChat || pr.In.URL.Path == mobileFiles || pr.In.URL.Path == mobileContext || pr.In.URL.Path == mobileCycle || pr.In.URL.Path == "/mobile/connect" || pr.In.URL.Path == "/mobile/inbox" || strings.HasPrefix(pr.In.URL.Path, "/mobile/reply-files/") || strings.HasPrefix(pr.In.URL.Path, "/mobile/stickers/") {
 			owner = "mobile"
 		}
 		pr.SetURL(target)
@@ -68,7 +68,7 @@ func gateway(password, workerToken string, target *url.URL, files http.Handler) 
 			proxy.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles || r.URL.Path == mobileContext || r.URL.Path == mobileCycle || r.URL.Path == "/mobile/inbox" {
+		if r.URL.Path == mobileChat || r.URL.Path == mobileFiles || r.URL.Path == mobileContext || r.URL.Path == mobileCycle || r.URL.Path == "/mobile/connect" || r.URL.Path == "/mobile/inbox" {
 			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Mode") != "" {
 				fail(w, 403, "网页仅支持查看记录")
 				return

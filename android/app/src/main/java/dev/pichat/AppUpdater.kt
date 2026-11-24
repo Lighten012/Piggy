@@ -19,6 +19,7 @@ import javax.net.ssl.HttpsURLConnection
 
 sealed class UpdateState {
     object Checking : UpdateState()
+    object Occupied : UpdateState()
     object Current : UpdateState()
     data class Preparing(val message: String) : UpdateState()
     data class Downloading(val name: String, val mode: String, val received: Long, val total: Long) : UpdateState()
@@ -58,7 +59,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
                     verified = update?.second
                     changed(if (update == null) UpdateState.Current else UpdateState.Ready(update.first))
                 }.onFailure {
-                    changed(UpdateState.Failed(it.localizedMessage ?: "无法连接更新服务"))
+                    changed(if (it is PiggyServer.Occupied) UpdateState.Occupied else UpdateState.Failed(it.localizedMessage ?: "无法连接更新服务"))
                 }
             }
         }
@@ -115,6 +116,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
         val code = manifest.getLong("versionCode")
         check(code >= version(installed)) { "服务器尚未发布此版本，请稍后重试" }
         if (code == version(installed) && OfficeRuntime.bundledAbi(activity) == abi) {
+            PiggyServer.connect(activity)
             cache.listFiles()?.filter { it.extension == "apk" }?.forEach { it.delete() }
             return null
         }

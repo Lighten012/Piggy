@@ -464,6 +464,8 @@ class ChatActivity : Activity() {
         if (versionCurrent) {
             if (client.inFlight && !generating) watchSend()
             else if (!generating) renderHistory()
+            chat.removeCallbacks(refreshPhrases)
+            refreshPhrases.run()
             pollInbox.run()
             refreshContext()
             toBottom()
@@ -498,6 +500,11 @@ class ChatActivity : Activity() {
                     promptedVersion = state.name
                     updater.install()
                 }
+            }
+            UpdateState.Occupied -> {
+                gateTitle.text = "这个 Piggy 已连接其他安装"
+                gateDetail.text = "请使用原来的 Piggy。如已换机或重装，请联系管理员。"
+                gateButton("重新连接") { updater.check() }
             }
             is UpdateState.Failed -> {
                 gateTitle.text = "暂时无法完成更新"
@@ -752,7 +759,7 @@ class ChatActivity : Activity() {
         super.onStart()
         chatVisible = true
         ReplyNotifications.chatStarted(this)
-        refreshPhrases.run()
+        if (versionCurrent) refreshPhrases.run()
         VivoRegistration.resume(this)
         pollInbox.run()
         replyWait?.visible(true)
