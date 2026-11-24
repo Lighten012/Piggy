@@ -1,3 +1,4 @@
+import { scheduleRoute,sendVivo } from "./schedules.ts";
 import { stickerRequest,stickerTool } from "./stickers.ts";
 import { cycleTools, localToday } from "./cycle.ts";
 import { persona } from "./persona.ts";
@@ -199,7 +200,7 @@ function reject(res: ServerResponse, status: number, error: string) {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify({ error }));
 }
-async function chat(req: IncomingMessage, res: ServerResponse) {
+async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) {
   const preview = req.url === "/context";
   if ((!preview && req.url !== "/chat") || req.method !== "POST") return reject(res, 404, "未知请求");
   if (req.headers["content-type"]?.split(";")[0] !== "application/json") {
@@ -248,7 +249,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const question = data.text.trim();
   const existing = journal.lookup(conversation,request);
   if (existing) {
-    if (existing.question !== question || JSON.stringify(journal.turnFiles(Number(existing.id)).map(f=>f.id)) !== JSON.stringify(ids)) return reject(res,409,"消息编号已占用");
+    if (existing.question !== (proactive ? "" : question) || JSON.stringify(journal.turnFiles(Number(existing.id)).map(f=>f.id)) !== JSON.stringify(ids)) return reject(res,409,"消息编号已占用");
     if (existing.status === "pending") {
       res.setHeader("Retry-After","3");
       return reject(res,409,"该消息仍在生成，请稍后重试");
@@ -264,7 +265,7 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   if (ids.length && stored.some(f => !f)) return reject(res,404,"找不到这段对话的附件，请重新选择");
   const files = stored.filter((f): f is Attachment => !!f && f.expires > Date.now());
   if (ids.length && files.length !== ids.length) return reject(res,410,"附件已过期，请重新选择");
-  const id = journal.begin(conversation,request,question,ids);
+  const id = journal.begin(conversation,request,proactive ? "" : question,ids);
   busy = true;
   res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
   res.flushHeaders();
@@ -275,8 +276,8 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
   const search = new WebSearch();
   let actualTier: string | undefined;
   const availableIds = journal.previousOutputs(conversation).filter(f=>f.until>Date.now()).map(f=>f.remote);
-  const systemPrompt = systemInstructions();
-  const declared = convertResponsesTools(toolDeclarations, {supportsStrictMode:true});
+  const systemPrompt = systemInstructions() + (proactive ? "\n这是管理员安排的定时任务。你正在主动给对方发消息。最后一条指令来自定时器，不能把它说成对方刚发来的话。直接写给对方。" : "");
+
   const controller = new AbortController();
   let cache: {input:unknown[]; tools:unknown[]; usage:ContextUsage} | undefined;
   async function count(input:unknown[], tools:unknown[], signal?:AbortSignal) {
@@ -306,7 +307,9 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
     const runningTools=new Map<string,unknown>();
     const toolFailures:{name:string;args:unknown;content:unknown}[]=[];
     let stopTools=false;
-    agent = newAgent(toolsForTurn,model,settings,outputs,search,availableIds,systemPrompt,count,
+    const permittedTools = proactive ? toolsForTurn.filter(tool=>["search_memory","search_chat_history","read_chat_context","send_sticker","read_cycle_calendar"].includes(tool.name)) : toolsForTurn;
+    const declared = convertResponsesTools(permittedTools,{supportsStrictMode:true});
+    agent = newAgent(permittedTools,model,settings,outputs,search,availableIds,systemPrompt,count,
       tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; },()=>stopTools);
     unsubscribe = agent.subscribe(event => {
       if(event.type==="tool_execution_start") runningTools.set(event.toolCallId,event.args);
@@ -359,10 +362,10 @@ async function chat(req: IncomingMessage, res: ServerResponse) {
       last.content = [...last.content.filter(part => part.type !== "text"), {type:"text",
         text:answer+"\n回复附件："+outputs.files.map(f=>f.name).join("、")}];
     }
-    journal.complete(id, answer, agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, prepared.replacement, stickerId);
+    journal.complete(id, answer, proactive ? [last] : agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, prepared.replacement, stickerId);
     committed = true;
     emit({ done:true, session:conversation, answer, ...(stickerId?{stickerId}:{}), replyFiles:journal.replyFiles(id) });
-    console.info(JSON.stringify({event:"chat", owner:"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", compacted:!!prepared.replacement, webSearchUsed:search.used,
+    console.info(JSON.stringify({event:"chat", owner:proactive?"scheduler":"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", compacted:!!prepared.replacement, webSearchUsed:search.used,
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
   } catch (error) {
@@ -433,6 +436,14 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if (!timingSafeEqual(digest(req.headers.authorization || ""), workerAuth)) return reject(res,401,"身份无效");
   const url = new URL(req.url || "/", "http://localhost");
+  if (url.pathname === "/inbox" || url.pathname === "/schedules" || url.pathname.startsWith("/schedules/")) {
+    void scheduleRoute(journal.schedules,req,res,url.pathname,id=>journal.replyFiles(id)).catch(()=>reject(res,500,"服务暂时不可用"));
+    return;
+  }
+  if (url.pathname === "/chat" && req.headers["x-piggy-owner"]==="scheduler") {
+    void chat(req,res,true).catch(()=>{if(!res.headersSent) reject(res,500,"任务生成失败");else res.end();});
+    return;
+  }
   if (url.pathname === "/stickers" || url.pathname.startsWith("/stickers/")) {
     void stickerRequest(journal.stickers,req,res,url.pathname,req.headers["x-piggy-owner"]==="admin").catch(()=>reject(res,500,"表情暂时不可用"));
     return;
@@ -506,5 +517,52 @@ server.requestTimeout = 120000;
 server.maxConnections = 32;
 server.listen(Number(process.env.PORT || 18889), host, () => {
   const address = server.address();
+  if (address && typeof address !== "string") startSchedules(address.port);
   if (address && typeof address !== "string") console.log(`Piggy ready on port ${address.port} (model=${activeSettings().model}, thinking=${activeSettings().effort})`);
 });
+
+function startSchedules(port:number) {
+  const store=journal.schedules, db=store.db;
+  let working=false, pushing=false;
+  async function generate() {
+    const run=db.prepare("SELECT * FROM scheduled_runs WHERE status='queued' ORDER BY due LIMIT 1").get();
+    if(!run) return;
+    const existing=journal.lookup(String(run.session),String(run.request));
+    if(!existing && Date.now()-Number(run.due)>600000) {
+      db.prepare("UPDATE scheduled_runs SET status='missed' WHERE request=?").run(run.request);
+      return;
+    }
+    if(!existing && !busy) {
+      const response=await fetch(`http://127.0.0.1:${port}/chat`, {method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+workerToken,"X-Piggy-Owner":"scheduler"},
+        body:JSON.stringify({session:run.session,request:run.request,text:run.prompt}),signal:AbortSignal.timeout(375000)});
+      if(response.status===409 || response.status===503) {
+        await response.body?.cancel();
+        if(Date.now()-Number(run.due)>600000) db.prepare("UPDATE scheduled_runs SET status='failed' WHERE request=?").run(run.request);
+        return;
+      }
+      if(response.body) for await(const _ of response.body) { /* completion is durably recorded in turns */ }
+    } else if(!existing) return;
+    const turn=journal.lookup(String(run.session),String(run.request));
+    if(turn?.status==="pending") return;
+    db.prepare("UPDATE scheduled_runs SET status=? WHERE request=?").run(turn?.status==="complete"?"generated":"failed",run.request);
+  }
+  async function push() {
+    const run=db.prepare(`SELECT r.request,r.attempts,r.due,d.reg,t.answer FROM scheduled_runs r JOIN schedule_devices d ON r.session=d.session
+      JOIN turns t ON t.conversation=r.session AND t.request=r.request
+      WHERE r.status='generated' AND r.push='pending' AND r.retry<=? ORDER BY r.due LIMIT 1`).get(Date.now());
+    if(!run) return;
+    let state="unconfigured";
+    try {
+      if(Date.now()-Number(run.due)>600000) state="expired";
+      else if(process.env.VIVO_APP_ID && process.env.VIVO_APP_KEY && process.env.VIVO_APP_SECRET)
+        state=run.reg ? await sendVivo(String(run.reg),String(run.request),String(run.answer)) : "unregistered";
+    } catch { state=Number(run.attempts)>=2 ? "failed" : "pending"; }
+    db.prepare("UPDATE scheduled_runs SET push=?,attempts=attempts+1,retry=? WHERE request=?").run(state,Date.now()+15000*(Number(run.attempts)+1),run.request);
+  }
+  setInterval(()=>{
+    try {store.enqueue(Date.now());} catch {console.warn("Schedule queue unavailable");}
+    if(!working) {working=true;void generate().catch(()=>console.warn("Scheduled generation interrupted")).finally(()=>{working=false;});}
+    if(!pushing) {pushing=true;void push().catch(()=>console.warn("Scheduled push interrupted")).finally(()=>{pushing=false;});}
+  },2000).unref();
+}

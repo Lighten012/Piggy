@@ -1,3 +1,4 @@
+import { Schedules } from "./schedules.ts";
 import { StickerLibrary } from "./stickers.ts";
 import { CycleStore } from "./cycle.ts";
 import { MemoryStore } from "./memory-store.ts";
@@ -29,12 +30,14 @@ function keywordExcerpt(text:string, terms:string[], size:number) {
 }
 
 export class Journal {
+  readonly schedules:Schedules;
   private db: DatabaseSync;
   readonly stickers:StickerLibrary;
   readonly cycles:CycleStore;
   readonly memories:MemoryStore;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
+    this.schedules = new Schedules(this.db);
     this.db.exec(`
       PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS reply_phrases (

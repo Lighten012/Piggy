@@ -23,6 +23,7 @@ class SettingsActivity : Activity() {
             insets
         }
         findViewById<Toolbar>(R.id.settings_toolbar).setNavigationOnClickListener { finish() }
+        VivoRegistration.settings(this)
         val device = PowerSettingsDevice.current()
         findViewById<TextView>(R.id.power_directions).text = device.directions(getString(R.string.app_name))
         findViewById<TextView>(R.id.background_power).apply {

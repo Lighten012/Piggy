@@ -88,6 +88,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     }
 
     companion object {
+        private val historyLock = Any()
         val STICKER_ID = Regex("[0-9a-f]{24}")
         const val MAX_FILES = 4
         private fun objects(array: JSONArray) = List(array.length()) { array.getJSONObject(it) }
@@ -233,6 +234,43 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         }
     }
 
+    private val inboxWorker = Executors.newSingleThreadExecutor()
+    fun syncInbox(finished: (Boolean) -> Unit) = inboxWorker.execute {
+        var changed = false
+        runCatching {
+            val after = prefs.getLong("inboxAfter", 0)
+            val body = JSONObject().put("session", session).put("after", after)
+                .put("model", android.os.Build.MODEL.take(100))
+                .put("reg", VivoRegistration.token(context))
+            post(PiggyServer.url("/mobile/inbox"), { http ->
+                http.setRequestProperty("Content-Type", "application/json")
+                http.outputStream.use { it.write(body.toString().toByteArray()) }
+            }) { http ->
+                val page = JSONObject(http.inputStream.bufferedReader().use { it.readText() }).getJSONArray("messages")
+                val evicted = mutableListOf<JSONObject>()
+                synchronized(historyLock) {
+                    val saved = recent
+                    val cursor = prefs.getLong("inboxAfter", 0)
+                    var last = cursor
+                    for (turn in objects(page)) {
+                        val id = turn.getLong("id")
+                        if (id <= last) continue
+                        saved.put(turn.put("proactive", true))
+                        last = id
+                        if (saved.length() > 40) evicted += saved.remove(0) as JSONObject
+                    }
+                    if (last > cursor) changed = prefs.edit().putLong("inboxAfter", last)
+                        .putString("recent", saved.toString()).commit()
+                }
+                if (changed) for (turn in evicted) for (file in turnFiles(turn)) {
+                    ImagePreviews.discard(context, file.getString("id"))
+                    releaseFile(file)
+                }
+            }
+        }
+        ui { finished(changed) }
+    }
+
     private fun usage(json: JSONObject): ContextUsage {
         val used = json.getInt("used")
         val limit = json.getInt("limit")
@@ -331,7 +369,6 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                         }
                     }
                     if (!done) throw IOException("回复中断，请重试")
-                    val saved = recent
                     val turn = JSONObject().put("request", id).put("text", draftText).put("answer", answer.toString())
                     if (files.isNotEmpty()) {
                         files.forEach { ImagePreviews.save(context, it) }
@@ -339,12 +376,13 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                     }
                     if (stickerId.matches(STICKER_ID)) turn.put("stickerId",stickerId)
                     replies?.let { turn.put("replyFiles", it) }
-                    saved.put(turn)
-                    val evicted = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
-                    synchronized(this@PiggyClient) {
+                    val evicted = synchronized(historyLock) {
+                        val saved = recent.put(turn)
+                        val oldest = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
                         if (closed || pendingId != id) throw IOException("发送任务已暂停")
                         check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
                             .remove("sending").remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
+                        oldest
                     }
                     savedReply = turn
                     if (evicted != null) for (file in turnFiles(evicted)) {
@@ -427,6 +465,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         synchronized(this) { closed = true }
         connections.forEach { it.disconnect() }
         selectionWorker.shutdownNow()
+        inboxWorker.shutdownNow()
         contextWorker.shutdownNow()
         worker.shutdownNow()
         downloads.shutdown()

@@ -464,6 +464,7 @@ class ChatActivity : Activity() {
         if (versionCurrent) {
             if (client.inFlight && !generating) watchSend()
             else if (!generating) renderHistory()
+            pollInbox.run()
             refreshContext()
             toBottom()
             return
@@ -714,13 +715,34 @@ class ChatActivity : Activity() {
         val recent = client.recent
         for (i in 0 until recent.length()) {
             val turn = recent.getJSONObject(i)
-            bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
+            if (!turn.optBoolean("proactive")) bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
             bubble(turn.getString("answer"), false, client.replyFiles(turn),stickerId=turn.optString("stickerId"))
         }
     }
 
     private var replyWait: ReplyWait? = null
     private var chatVisible = false
+    private var checkingInbox = false
+    private val pollInbox = object : Runnable {
+        override fun run() {
+            chat.removeCallbacks(this)
+            if (!chatVisible || !versionCurrent || checkingInbox) return
+            if (generating || client.inFlight) {
+                chat.postDelayed(this, 3000)
+                return
+            }
+            checkingInbox = true
+            client.syncInbox { changed ->
+                checkingInbox = false
+                if (changed && chatVisible && !generating && !client.inFlight) {
+                    renderHistory()
+                    toBottom()
+                    refreshContext()
+                }
+                if (chatVisible) chat.postDelayed(this, if (changed) 500 else 15000)
+            }
+        }
+    }
     private val refreshPhrases = object : Runnable {
         override fun run() {
             if (chatVisible) chat.postDelayed(this, ReplyPhrases.refresh(this@ChatActivity))
@@ -731,12 +753,15 @@ class ChatActivity : Activity() {
         chatVisible = true
         ReplyNotifications.chatStarted(this)
         refreshPhrases.run()
+        VivoRegistration.resume(this)
+        pollInbox.run()
         replyWait?.visible(true)
     }
     override fun onStop() {
         chatVisible = false
         ReplyNotifications.chatStopped()
         chat.removeCallbacks(refreshPhrases)
+        chat.removeCallbacks(pollInbox)
         replyWait?.visible(false)
         super.onStop()
     }

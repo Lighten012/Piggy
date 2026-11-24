@@ -76,6 +76,7 @@ test("records accepted mobile turns and restores context after restart", async t
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
     for (const [name,argument] of [["save_memory","text"],["search_memory","query"]]) {
       const tool = payload.tools.find((entry:{name?:string}) => entry.name === name);
+      if (name==="save_memory" && payload.input.some(i => i.role==="developer" && String(i.content).includes("最后一条指令来自定时器"))) {assert.equal(tool,undefined);continue;}
       assert.deepEqual(Object.keys(tool.parameters.properties),[argument]);
       assert.deepEqual(tool.parameters.required,[argument]);
     }
@@ -419,6 +420,32 @@ test("records accepted mobile turns and restores context after restart", async t
   worker=await start();
   assert.deepEqual((await (await fetch(worker.base+"/capabilities",{headers:admin})).json()).active,updated);
   assert.equal((await send("settings-probe",randomUUID(),randomUUID())).at(-1).done,true);
+
+  {
+    const phone=randomUUID(), other=randomUUID();
+    const inbox=async (session:string,after=0)=>(await (await fetch(worker.base+"/inbox",{method:"POST",headers:mobile,
+      body:JSON.stringify({session,model:"fixture",after})})).json()).messages;
+    assert.deepEqual(await inbox(phone),[]);
+    const task={session:phone,name:"早安",cron:"0 8 * * *",prompt:"settings-probe scheduled",enabled:true};
+    assert.equal((await fetch(worker.base+"/schedules",{method:"POST",headers:mobile,body:JSON.stringify(task)})).status,403);
+    assert.equal((await fetch(worker.base+"/schedules",{method:"POST",headers:admin,body:JSON.stringify(task)})).status,200);
+    const schedulesDB=new DatabaseSync(join(dir,"test.sqlite"));
+    schedulesDB.prepare("UPDATE schedules SET next=?").run(Date.now()-1);
+    let messages=[];
+    for(let i=0;i<50 && !messages.length;i++) {
+      await new Promise(r=>setTimeout(r,150));messages=await inbox(phone);
+    }
+    assert.equal(messages.length,1);
+    assert.equal(messages[0].answer,"OK");
+    assert.deepEqual(await inbox(other),[]);
+    assert.deepEqual(await inbox(phone,messages[0].id),[]);
+    const transcript=schedulesDB.prepare("SELECT question,status FROM turns WHERE conversation=?").get(phone);
+    assert.equal(transcript?.question,"");
+    assert.equal(transcript?.status,"complete");
+    assert.equal(schedulesDB.prepare("SELECT count(*) AS n FROM scheduled_runs").get()?.n,1);
+    assert.deepEqual(JSON.parse(String(schedulesDB.prepare("SELECT messages FROM active_context WHERE conversation=?").get(phone)?.messages)).map(m=>m.role),["assistant"]);
+    schedulesDB.close();
+  }
 
 });
 

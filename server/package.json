@@ -11,6 +11,7 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
+    "croner": "11.0.1",
     "js-yaml": "4.3.2",
     "pngjs": "7.0.0"
   }

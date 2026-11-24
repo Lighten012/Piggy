@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 
+import Schedules from "./Schedules.vue";
 import Capabilities from "./Capabilities.vue";
 import MarkdownMessage from "./MarkdownMessage.vue";
 import piggyMark from "../../../../android/app/src/main/res/drawable-nodpi/piggy_portrait.webp?no-inline";
@@ -8,7 +9,7 @@ import piggyMark from "../../../../android/app/src/main/res/drawable-nodpi/piggy
 const appName = import.meta.env.VITE_PIGGY_ENVIRONMENT === "staging" ? "Piggy 测试版" : "Piggy";
 document.title = appName + " · 管理端";
 
-function currentView() { return location.hash === "#capabilities" ? "capabilities" : "history"; }
+function currentView() { return location.hash === "#schedules" ? "schedules" : location.hash === "#capabilities" ? "capabilities" : "history"; }
 const view = ref(currentView());
 async function navigate() {
   view.value = currentView();
@@ -82,8 +83,10 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
     <nav aria-label="管理端导航">
       <a href="#history" :aria-current="view === 'history' ? 'page' : undefined">对话记录</a>
       <a href="#capabilities" :aria-current="view === 'capabilities' ? 'page' : undefined">Agent 能力</a>
+      <a href="#schedules" :aria-current="view === 'schedules' ? 'page' : undefined">定时任务</a>
     </nav>
   </div></header>
+  <Schedules v-if="view === 'schedules'" />
   <Capabilities v-if="view === 'capabilities'" />
   <main v-show="view === 'history'">
     <div class="heading"><h1>手机对话记录</h1></div>
@@ -96,7 +99,7 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
       <button v-if="older" type="button" class="older" @click="refresh(true)">查看更早记录</button>
       <article v-for="(row, i) in turns" :key="row.id">
         <div class="day" v-if="i === 0 || date.format(turns[i - 1].created) !== date.format(row.created)"><span>{{ date.format(row.created) }}</span></div>
-        <div class="entry mine"><div class="byline">你 <time :datetime="new Date(row.created).toISOString()">{{ time.format(row.created) }}</time></div>
+        <div v-if="row.question" class="entry mine"><div class="byline">你 <time :datetime="new Date(row.created).toISOString()">{{ time.format(row.created) }}</time></div>
           <div v-for="(file, index) in (row.files ?? (row.filename ? [{name:row.filename,size:row.filesize}] : []))"
                :key="index" class="attachment">
             <span class="file-note">{{ file.name }} · {{ Math.ceil(file.size / 1024) }} KB</span>
