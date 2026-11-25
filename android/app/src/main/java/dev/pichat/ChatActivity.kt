@@ -111,19 +111,33 @@ class ChatActivity : Activity() {
         client = PiggyClient(this) { updater.check() }
         val header = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), 0, dp(12), 0)
+            setPadding(dp(4), 0, dp(8), 0)
             setBackgroundColor(paper)
         }
+        val identity = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         menu = navButton(R.drawable.nav_menu, "打开侧边栏") { showDrawer() }
-        header.addView(menu, dp(48), dp(48))
-        header.addView(mark(), LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(3) })
-        header.addView(text(getString(R.string.app_name), 18f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
-            LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(8) })
-        header.addView(modeSwitch(), LinearLayout.LayoutParams(wrap, dp(48)).apply { leftMargin = dp(8) })
-        header.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        identity.addView(menu, dp(48), dp(48))
+        identity.addView(mark(), LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(3) })
+        identity.addView(text("Piggy", 18f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
+            LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(6) })
+        val modes = modeSwitch()
+        val modeGap = dp(5)
+        val leading = object : LinearLayout(this) {
+            override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+                val natural = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                identity.measure(natural, natural)
+                modes.measure(natural, natural)
+                orientation = if (identity.measuredWidth + modeGap + modes.measuredWidth <= View.MeasureSpec.getSize(widthSpec))
+                    HORIZONTAL else VERTICAL
+                super.onMeasure(widthSpec, heightSpec)
+            }
+        }.apply { gravity = Gravity.CENTER_VERTICAL }
+        leading.addView(identity, wrap, wrap)
+        leading.addView(modes, LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = modeGap })
+        header.addView(leading, LinearLayout.LayoutParams(0, wrap, 1f))
         contextMeter = ContextMeter(this).apply { setOnClickListener { showContext() } }
-        header.addView(contextMeter, wrap, dp(48))
-        root.addView(header, match, dp(48))
+        header.addView(contextMeter, LinearLayout.LayoutParams(wrap, dp(48)).apply { gravity = Gravity.TOP })
+        root.addView(header, match, wrap)
         root.addView(View(this).apply { setBackgroundColor(line) }, match, 1)
 
         chat = FrameLayout(this)
@@ -256,39 +270,48 @@ class ChatActivity : Activity() {
     }
 
     private fun modeSwitch(): LinearLayout {
-        val group = LinearLayout(this)
-        fun inset(color: Int, vertical: Int) = android.graphics.drawable.InsetDrawable(
-            shape(color, 18), 0, dp(vertical), 0, dp(vertical))
-        group.background = inset(0xfff0edf3.toInt(), 8)
-        group.setPadding(dp(3), 0, dp(3), 0)
-        fun select(button: TextView, mode: String) {
-            val selected = mode == client.replyMode
-            button.isSelected = selected
-            button.setTextColor(if (selected) 0xff49335d.toInt() else 0xff696370.toInt())
-            button.typeface = Typeface.create(if (selected) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
-            button.background = RippleDrawable(ColorStateList.valueOf(0x2277558f),
-                inset(if (selected) 0xffe1d2ef.toInt() else Color.TRANSPARENT, 11), inset(Color.WHITE, 11))
+        val group = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(48)
+            background = android.graphics.drawable.InsetDrawable(shape(0xfff0edf3.toInt(), 18), 0, dp(6), 0, dp(6))
+            setPadding(dp(3), 0, dp(3), 0)
         }
-        for ((mode, label) in listOf("chat" to "聊天", "work" to "工作")) {
-            val button = text(label, 13f).apply {
-                tag = mode
+        fun select(target: FrameLayout) {
+            val selected = target.tag == client.replyMode
+            target.isSelected = selected
+            val label = target.getChildAt(0) as TextView
+            label.setTextColor(if (selected) 0xff49335d.toInt() else 0xff696370.toInt())
+            label.typeface = Typeface.create(if (selected) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+            label.background = shape(if (selected) 0xffe1d2ef.toInt() else Color.TRANSPARENT, 15)
+        }
+        for ((mode, name) in listOf("chat" to "聊天", "work" to "工作")) {
+            val label = text(name, 13f).apply {
                 gravity = Gravity.CENTER
+                setSingleLine()
+                minimumWidth = dp(48)
+                minimumHeight = dp(28)
+                setPadding(dp(5), dp(2), dp(5), dp(2))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            val target = FrameLayout(this).apply {
+                tag = mode
+                minimumHeight = dp(48)
+                setPadding(0, dp(8), 0, dp(8))
+                foreground = RippleDrawable(ColorStateList.valueOf(0x2277558f), null, shape(Color.WHITE, 18))
                 isFocusable = true
-                contentDescription = label + "模式"
+                contentDescription = name + "模式"
+                addView(label, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))
                 setOnClickListener {
                     if (client.replyMode != mode) {
                         client.replyMode = mode
-                        for (i in 0 until group.childCount) {
-                            val child = group.getChildAt(i) as TextView
-                            select(child, child.tag as String)
-                        }
+                        for (i in 0 until group.childCount) select(group.getChildAt(i) as FrameLayout)
                         contextEpoch++
                         refreshContext()
                     }
                 }
             }
-            select(button, mode)
-            group.addView(button, dp(48), match)
+            select(target)
+            group.addView(target, wrap, wrap)
         }
         return group
     }
