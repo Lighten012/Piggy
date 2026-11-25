@@ -158,7 +158,7 @@ class ChatActivity : Activity() {
             divider = null
             selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
             setItemsCanFocus(true)
-            setPadding(dp(1),dp(14),dp(1),dp(6))
+            setPadding(dp(1),0,dp(1),dp(6))
         }
         pendingRows = column()
         scroll.addFooterView(pendingRows, null, true)
@@ -831,6 +831,7 @@ class ChatActivity : Activity() {
             if (group.tag == position) return group
             group.removeAllViews()
             group.tag = position
+            group.setPadding(0, if (position == 0) dp(14) else 0, 0, 0)
             val turn = getItem(position)
             if (!turn.optBoolean("proactive")) group.bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
             group.bubble(turn.getString("answer"), false, client.replyFiles(turn), stickerId=turn.optString("stickerId"))

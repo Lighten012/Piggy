@@ -30,8 +30,8 @@ android {
         buildConfigField 'String', 'SERVER_ORIGIN', staging ? '"https://38.14.232.112:8889"' : '"https://38.14.232.112:8888"'
         minSdk 24
         targetSdk 36
-        versionCode staging ? 53 : 26
-        versionName staging ? '0.17.0-test.4' : '0.14.0'
+        versionCode staging ? 54 : 26
+        versionName staging ? '0.17.0-test.5' : '0.14.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
