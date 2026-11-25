@@ -34,7 +34,6 @@ class ContextMeter(context: Context) : TextView(context) {
         setPadding((31 * density).toInt(), 0, (5 * density).toInt(), 0)
         setTextColor(0xff675275.toInt())
         textSize = 13f
-        setSingleLine()
         minimumWidth = paddingLeft + paddingRight + kotlin.math.ceil(paint.measureText("100%")).toInt()
         isFocusable = true
         val style = android.util.TypedValue()
