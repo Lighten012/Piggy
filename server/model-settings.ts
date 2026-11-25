@@ -5,7 +5,7 @@ export interface ModelSettings { model: string; effort: string; tier: string }
 export type ReplyMode = "chat" | "work";
 export const isReplyMode = (value: unknown): value is ReplyMode => value === "chat" || value === "work";
 export const defaultWorkSettings: ModelSettings = {model:"gpt-6.2-astra", effort:"high", tier:"default"};
-interface Choice { id: string; name: string; efforts: string[]; tiers: string[] }
+interface Choice { id: string; name: string; efforts: string[]; tiers: string[]; offLabel?: string }
 
 const family = new Map<string,Model<"openai-responses">>();
 const choices: Choice[] = [];
@@ -22,10 +22,31 @@ for (const [id, name, input] of [
 }
 
 const initialId = process.env.PI_MODEL || "gpt-6.2-sol";
+const registry = createModels();
+registry.setProvider(openaiProvider());
+const effortLevels = ["off","low","medium","high","xhigh","max"] as const;
+const catalogIds = [
+  "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+  "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+  "gpt-4.1", "gpt-4.1-mini",
+];
+for (const id of catalogIds) {
+  const model = registry.getModel("openai",id);
+  if (!model || model.api !== "openai-responses") throw new Error(`Missing Responses model: ${id}`);
+  // Piggy supplies effort per request; keep the same wire format for counting and generation.
+  family.set(id,{...model,api:"openai-responses",compat:undefined,baseUrl});
+  const efforts: string[] = model.reasoning
+    ? effortLevels.filter(level => model.thinkingLevelMap?.[level] != null)
+    : ["off"];
+  const tiers = ["default","priority"];
+  if (id === "gpt-6.1-sol" || id === "gpt-6-astra") tiers.push("ultrafast");
+  // Previous PI_MODEL deployments stored "off" to omit the effort parameter.
+  const legacyDefault = id === initialId && !efforts.includes("off");
+  if (legacyDefault) efforts.unshift("off");
+  choices.push({id, name:model.name, efforts, tiers, ...(legacyDefault ? {offLabel:"模型默认"} : {})});
+}
 if (!family.has(initialId)) {
   // Preserve deployments using a previous Pi catalog model and its original effort.
-  const registry = createModels();
-  registry.setProvider(openaiProvider());
   const legacy = registry.getModel("openai",initialId);
   if (!legacy) throw new Error("Unknown PI_MODEL");
   family.set(initialId,{...legacy,api:"openai-responses",compat:undefined,baseUrl});
@@ -33,7 +54,7 @@ if (!family.has(initialId)) {
 }
 export const modelChoices = choices;
 export const defaultSettings: ModelSettings = {
-  model:initialId, effort:choices.find(c=>c.id===initialId)!.efforts.includes("high") ? "high" : "off", tier:"default",
+  model:initialId, effort:["gpt-6.2-sol","gpt-6.2-astra"].includes(initialId) ? "high" : "off", tier:"default",
 };
 export function validSettings(value: unknown): value is ModelSettings {
   if (!value || typeof value !== "object") return false;

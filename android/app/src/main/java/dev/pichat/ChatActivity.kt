@@ -297,10 +297,19 @@ class ChatActivity : Activity() {
                 tag = mode
                 minimumHeight = dp(48)
                 setPadding(0, dp(8), 0, dp(8))
-                foreground = RippleDrawable(ColorStateList.valueOf(0x2277558f), null, shape(Color.WHITE, 18))
+                if (android.os.Build.VERSION.SDK_INT >= 26) defaultFocusHighlightEnabled = false
                 isFocusable = true
                 contentDescription = name + "模式"
                 addView(label, FrameLayout.LayoutParams(wrap, wrap, Gravity.CENTER))
+                val mask = android.graphics.drawable.LayerDrawable(arrayOf(shape(Color.WHITE, 15)))
+                mask.setLayerGravity(0, Gravity.CENTER)
+                foreground = RippleDrawable(ColorStateList.valueOf(0x3377558f), null, mask)
+                label.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ ->
+                    mask.setLayerSize(0, r - l, b - t)
+                    // LayerDrawable positions its child when the bounds change.
+                    mask.setBounds(0, 0, 0, 0)
+                    mask.setBounds(0, 0, width, height)
+                }
                 setOnClickListener {
                     if (client.replyMode != mode) {
                         client.replyMode = mode

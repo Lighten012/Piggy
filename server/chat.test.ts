@@ -73,7 +73,7 @@ test("records accepted mobile turns and restores context after restart", async t
     for (const i of payload.input) if (i.type==="function_call_output" && Array.isArray(i.output)) recalledInputs.push(...i.output);
     const changed = payload.input.some(i => JSON.stringify(i.content ?? "").includes("settings-probe"));
     const workProbe = payload.input.filter(i => i.role === "user").at(-1)?.content.some(part => part.text === "work-mode-probe");
-    assert.equal(payload.model, !workProbe && changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
+    assert.equal(payload.model, workProbe ? "gpt-6.1-terra" : changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
     for (const [name,argument] of [["save_memory","text"],["search_memory","query"]]) {
       const tool = payload.tools.find((entry:{name?:string}) => entry.name === name);
@@ -453,7 +453,11 @@ test("records accepted mobile turns and restores context after restart", async t
 
   const updated = {model:"gpt-6.2-astra",effort:"max",tier:"ultrafast"};
   assert.deepEqual(await (await setModel(admin,updated)).json(),updated);
-  const workProfile = {...defaultSettings,effort:"medium",tier:"priority"};
+  const workProfile = {model:"gpt-6.1-terra",effort:"medium",tier:"priority"};
+  assert.equal((await setModel(admin,{...workProfile,tier:"ultrafast"})).status,400);
+  assert.equal((await setModel(admin,{...workProfile,model:"gpt-4.1-mini"})).status,400);
+  assert.deepEqual(modelChoices.find(c=>c.id==="gpt-4.1-mini")?.efforts,["off"]);
+  assert.equal(modelChoices.find(c=>c.id==="gpt-5.4-mini")?.efforts.includes("max"),false);
   assert.equal((await setModel(admin,{...updated,mode:"other"})).status,400);
   assert.deepEqual(await (await setModel(admin,{...workProfile,mode:"work"})).json(),workProfile);
   const exit=once(worker.child,"exit");worker.child.kill();await exit;

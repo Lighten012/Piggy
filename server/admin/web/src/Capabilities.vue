@@ -101,7 +101,7 @@ onUnmounted(() => controller.abort());
               <option v-for="m in catalog.models" :key="m.id" :value="m.id">{{ m.name }}</option>
             </select></div>
             <div class="field"><label :for="id + '-effort'">思考强度</label><select :id="id + '-effort'" v-model="drafts[id].effort">
-              <option v-for="e in choice(id).efforts" :key="e" :value="e">{{ effortLabels[e] }}</option>
+              <option v-for="e in choice(id).efforts" :key="e" :value="e">{{ e === "off" && choice(id).offLabel ? choice(id).offLabel : effortLabels[e] }}</option>
             </select></div>
             <div class="field"><label :for="id + '-tier'">回复速度</label><select :id="id + '-tier'" v-model="drafts[id].tier" aria-describedby="speed-note">
               <option v-for="t in choice(id).tiers" :key="t" :value="t">{{ tierLabels[t] }}</option>
