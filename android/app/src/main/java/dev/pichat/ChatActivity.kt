@@ -45,12 +45,8 @@ class ChatActivity : Activity() {
     private lateinit var fileStrip: HorizontalScrollView
     private lateinit var sendError: TextView
     private lateinit var send: ImageButton
-    private lateinit var gate: LinearLayout
-    private lateinit var gateTitle: TextView
-    private lateinit var gateDetail: TextView
-    private lateinit var gateAction: TextView
-    private lateinit var gateDownload: ProgressBar
-    private lateinit var gateProgress: ProgressBar
+    private lateinit var gate: UpdateTicket
+    private lateinit var chatHeader: LinearLayout
     private lateinit var client: PiggyClient
     private lateinit var updater: AppUpdater
 
@@ -141,8 +137,11 @@ class ChatActivity : Activity() {
         header.addView(leading, LinearLayout.LayoutParams(0, wrap, 1f))
         contextMeter = ContextMeter(this).apply { setOnClickListener { showContext() } }
         header.addView(contextMeter, LinearLayout.LayoutParams(wrap, dp(48)).apply { gravity = Gravity.TOP })
-        root.addView(header, match, wrap)
-        root.addView(View(this).apply { setBackgroundColor(line) }, match, 1)
+        chatHeader = column().apply {
+            addView(header, match, wrap)
+            addView(View(this@ChatActivity).apply { setBackgroundColor(line) }, match, 1)
+        }
+        root.addView(chatHeader, match, wrap)
 
         chat = FrameLayout(this)
         chat.addView(ImageView(this).apply {
@@ -244,33 +243,7 @@ class ChatActivity : Activity() {
         root.addView(chat, LinearLayout.LayoutParams(match, 0, 1f))
         chat.visibility = View.GONE
 
-        gate = column().apply { gravity = Gravity.CENTER; setPadding(dp(20), 0, dp(20), 0) }
-        val card = column().apply {
-            gravity = Gravity.CENTER
-            background = shape(Color.WHITE, 30, true)
-            setPadding(dp(20), dp(30), dp(20), dp(26))
-        }
-        card.addView(mark(), dp(64), dp(64))
-        gateTitle = text("", 23f).apply { gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD }
-        card.addView(gateTitle, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(18) })
-        gateDetail = text("", 15f, muted).apply { gravity = Gravity.CENTER }
-        card.addView(gateDetail, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(10) })
-        gateProgress = ProgressBar(this).apply { indeterminateTintList = ColorStateList.valueOf(plum) }
-        card.addView(gateProgress, LinearLayout.LayoutParams(dp(26), dp(26)).apply { topMargin = dp(20) })
-        gateDownload = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
-            progressTintList = ColorStateList.valueOf(plum)
-            progressBackgroundTintList = ColorStateList.valueOf(lavender)
-        }
-        card.addView(gateDownload, LinearLayout.LayoutParams(match, dp(12)).apply { topMargin = dp(16) })
-        gateAction = text("", 16f, Color.WHITE).apply {
-            gravity = Gravity.CENTER
-            background = pill()
-            isFocusable = true
-            setPadding(dp(24), 0, dp(24), 0)
-        }
-        card.addView(gateAction, LinearLayout.LayoutParams(wrap, dp(48)).apply { topMargin = dp(20) })
-        gate.addView(card, LinearLayout.LayoutParams(match, wrap))
+        gate = UpdateTicket(this)
         root.addView(gate, LinearLayout.LayoutParams(match, 0, 1f))
         setContentView(root)
         attachmentActions.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
@@ -551,6 +524,8 @@ class ChatActivity : Activity() {
         menu.isEnabled = versionCurrent
         if (!versionCurrent) drawer?.dismiss()
         chat.visibility = if (versionCurrent) View.VISIBLE else View.GONE
+        chatHeader.visibility = chat.visibility
+        (gate.parent as View).setBackgroundColor(if (versionCurrent) paper else UpdateTicket.backdrop)
         gate.visibility = if (versionCurrent) View.GONE else View.VISIBLE
         controls()
         if (versionCurrent) {
@@ -564,54 +539,14 @@ class ChatActivity : Activity() {
             return
         }
         ScheduledInbox.suspendPolling(this)
-        gateProgress.visibility = if (state == UpdateState.Checking || state is UpdateState.Preparing) View.VISIBLE else View.GONE
-        gateDownload.visibility = if (state is UpdateState.Downloading) View.VISIBLE else View.GONE
-        gateAction.visibility = View.GONE
-        gateDetail.visibility = View.VISIBLE
-        when (state) {
-            UpdateState.Checking -> {
-                gateTitle.text = "正在确认版本"
-                gateDetail.visibility = View.GONE
+        gate.show(state, updater::install, updater::check)
+        if (state is UpdateState.Ready) {
+            val permitted = android.os.Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls()
+            if (promptedVersion != state.name && permitted && hasWindowFocus()) {
+                promptedVersion = state.name
+                updater.install()
             }
-            is UpdateState.Preparing -> {
-                gateTitle.text = state.message
-                gateDetail.visibility = View.GONE
-            }
-            is UpdateState.Downloading -> {
-                gateTitle.text = "正在更新到 " + state.name
-                val percent = (state.received * 100 / state.total).toInt()
-                gateDownload.progress = percent
-                gateDetail.text = String.format(java.util.Locale.ROOT, "%s · %d%%\n%.1f / %.1f MB",
-                    state.mode, percent, state.received / 1e6, state.total / 1e6)
-            }
-            is UpdateState.Ready -> {
-                gateTitle.text = "新版本已准备好"
-                gateDetail.text = "安装 " + state.name + " 后即可继续之前的对话。"
-                gateButton("安装更新") { updater.install() }
-                val permitted = android.os.Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls()
-                if (promptedVersion != state.name && permitted && hasWindowFocus()) {
-                    promptedVersion = state.name
-                    updater.install()
-                }
-            }
-            UpdateState.Occupied -> {
-                gateTitle.text = "这个 Piggy 已连接其他安装"
-                gateDetail.text = "请使用原来的 Piggy。如已换机或重装，请联系管理员。"
-                gateButton("重新连接") { updater.check() }
-            }
-            is UpdateState.Failed -> {
-                gateTitle.text = "暂时无法完成更新"
-                gateDetail.text = state.message
-                gateButton("重试") { updater.check() }
-            }
-            UpdateState.Current -> Unit
         }
-    }
-
-    private fun gateButton(value: String, click: () -> Unit) {
-        gateAction.text = value
-        gateAction.visibility = View.VISIBLE
-        gateAction.setOnClickListener { click() }
     }
 
     @Deprecated("Activity result callback")

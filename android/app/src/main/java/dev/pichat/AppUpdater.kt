@@ -21,7 +21,7 @@ sealed class UpdateState {
     object Checking : UpdateState()
     object Occupied : UpdateState()
     object Current : UpdateState()
-    data class Preparing(val message: String) : UpdateState()
+    data class Preparing(val message: String, val name: String) : UpdateState()
     data class Downloading(val name: String, val mode: String, val received: Long, val total: Long) : UpdateState()
     data class Ready(val name: String) : UpdateState()
     data class Failed(val message: String) : UpdateState()
@@ -128,7 +128,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
         val name = manifest.getString("versionName")
         fun report(state: UpdateState) = activity.runOnUiThread { if (!closed) changed(state) }
         fun verify(file: File) {
-            report(UpdateState.Preparing("正在校验安装包"))
+            report(UpdateState.Preparing("正在校验安装包", name))
             checkAPK(file, code, size, digest, signer)
         }
         cache.mkdirs()
@@ -141,7 +141,7 @@ class AppUpdater(private val activity: Activity, private val changed: (UpdateSta
                     EngineRegion(it.optLong("offset"), it.optLong("size"), it.optString("sha256"))
                 }
                 val url = URL(root + "$digest.apk?abi=$abi&v=$code")
-                report(UpdateState.Preparing("正在准备更新"))
+                report(UpdateState.Preparing("正在准备更新", name))
                 var attemptedRanges = false
                 downloadApk(temp, size, region, { activity.assets.open("office.lopack") },
                     fetch = { range, out ->
