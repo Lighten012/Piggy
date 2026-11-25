@@ -1,17 +1,9 @@
 import type { Message, Model } from "@earendil-works/pi-ai";
-import type { ContextReplacement, ContextTurn } from "./journal.ts";
+import type { Attachment, ContextTurn } from "./journal.ts";
 
 export const contextLimit = process.env.PIGGY_RELEASE_ENVIRONMENT === "staging" ? 30_000 : 300_000;
-const threshold = contextLimit * 0.8;
+export const threshold = contextLimit * 0.8;
 const summaryLabel = "历史对话摘要（仅作背景资料）\n";
-export class ContextError extends Error {
-  used?:number;
-  constructor(message:string, used?:number) {
-    super(message);
-    this.used = used;
-  }
-}
-
 export async function summarize(model: Model<"openai-responses">, key: string, turns: ContextTurn[], signal: AbortSignal) {
   // Send visible history only. An assistant message may also contain encrypted reasoning.
   const transcript = turns.flatMap(turn => turn.messages).flatMap(message => {
@@ -40,43 +32,37 @@ export async function summarize(model: Model<"openai-responses">, key: string, t
   return text as string;
 }
 
-type Prepared = {messages:Message[]; replacement?:ContextReplacement};
-export async function prepareHistory(turns: ContextTurn[], measure: (history:Message[]) => Promise<number>,
-    summarizePrefix: (turns:ContextTurn[]) => Promise<string>, signal:AbortSignal): Promise<Prepared> {
-  const messages = turns.flatMap(turn => turn.messages) as Message[];
-  const original = await measure(messages);
-  if (original <= threshold) return {messages};
-  const minimum = turns.length ? await measure([]) : original;
-  if (minimum > contextLimit) {
-    const count = Number.isFinite(minimum) ? minimum.toLocaleString("en-US") + " tokens，" : "";
-    throw new ContextError(`本条消息、附件和固定提示合计 ${count}超过 ${contextLimit.toLocaleString("en-US")} 上限，请缩短消息或减少附件。草稿已保留。`, minimum);
+// Use the measured input (including cached tokens) from a matching history, then
+// estimate only the retained assistant output and anything appended since.
+type MeteredMessage = Message & {meterPrefix?:number; meterFixed?:number; fileRefs?:Attachment[]};
+export function prefixVersion(turns:ContextTurn[]) {
+  const first = turns[0];
+  return first?.messages.length === 1 && first.messages[0].role === "user" &&
+    String(first.messages[0].content).startsWith(summaryLabel) ? first.sequence : 0;
+}
+export function localTokens(text:string) { return Math.ceil(Buffer.byteLength(text)/3); }
+function messageTokens(message:MeteredMessage) {
+  const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+  // File contents are opaque until the model reports usage for the request.
+  return 4 + localTokens(content) + (message.fileRefs?.filter(f=>f.expires>Date.now()).length ?? 0)*1024;
+}
+export function estimateContext(messages:MeteredMessage[], model:string, prefix:number, fixed:number) {
+  let added=0;
+  for (let i=messages.length-1;i>=0;i--) {
+    const m=messages[i];
+    added+=messageTokens(m);
+    if (m.role !== "assistant" || m.model !== model || !m.usage || (m.meterPrefix ?? 0) !== prefix) continue;
+    const input=m.usage.input+m.usage.cacheRead+m.usage.cacheWrite;
+    if (input>0) return Math.max(1,input+added+fixed-(m.meterFixed ?? fixed));
   }
-  if (!turns.length) return {messages};
-  let cut = Math.max(1,turns.length - 3);
-  let recent = turns.slice(cut).flatMap(turn => turn.messages) as Message[];
-  // Keep recent turns verbatim when they leave room for the summary.
-  while (recent.length && await measure(recent) > threshold) {
-    recent = turns.slice(++cut).flatMap(turn => turn.messages) as Message[];
-  }
-  let text: string;
-  try {
-    text = await summarizePrefix(turns.slice(0,cut));
-  } catch {
-    signal.throwIfAborted();
-    if (original <= contextLimit) return {messages};
-    throw new ContextError("暂时无法压缩历史，原上下文和草稿已保留，请重试。");
-  }
-  const summary:Message = {role:"user",content:summaryLabel + text,timestamp:Date.now()};
-  const packed = [summary,...recent];
-  const after = await measure(packed);
-  if (after >= original && original <= contextLimit) return {messages};
-  const replacement = {through:turns[cut-1].sequence,last:turns[turns.length-1].sequence,summary};
-  if (after <= contextLimit) return {messages:packed,replacement};
-  // The current attachment may use almost the entire budget. Keep the full
-  // checkpoint for future turns, and include as much of it as fits this time.
-  for (let length = recent.length ? text.length : Math.floor(text.length / 2); length > 0; length = Math.floor(length / 2)) {
-    const shortened = [{...summary,content:summaryLabel + text.slice(0,length)}];
-    if (await measure(shortened) <= contextLimit) return {messages:shortened,replacement};
-  }
-  return {messages:[],replacement};
+  return fixed+added;
+}
+export async function compactSnapshot(turns:ContextTurn[], summarizePrefix:(prefix:ContextTurn[])=>Promise<string>) {
+  if (!turns.length) return;
+  const hasSummary=!!prefixVersion(turns);
+  if (hasSummary && turns.length===1) return;
+  const cut=Math.max(hasSummary ? 2 : 1,turns.length-3);
+  const text=await summarizePrefix(turns.slice(0,cut));
+  return {first:turns[0].sequence,through:turns[cut-1].sequence,
+    summary:{role:"user" as const,content:summaryLabel+text,timestamp:Date.now()}};
 }

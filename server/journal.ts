@@ -18,7 +18,7 @@ import type { ModelSettings, ReplyMode } from "./model-settings.ts";
 
 type ContextMessage = AgentMessage & {fileRefs?: Attachment[]};
 export interface ContextTurn { sequence: number; messages: ContextMessage[] }
-export interface ContextReplacement { through: number; last: number; summary: AgentMessage }
+export interface ContextReplacement { first: number; through: number; summary: AgentMessage }
 
 interface Copy { key: string; until: number; mime: string; providerName?: string }
 
@@ -258,17 +258,22 @@ export class Journal {
   contextMessages(conversation: string): ContextMessage[] {
     return this.contextTurns(conversation).flatMap(turn => turn.messages);
   }
-  private replacePrefix(conversation: string, replacement: ContextReplacement) {
-    const {through,last,summary} = replacement;
-    const latest = this.db.prepare("SELECT max(sequence) AS last FROM active_context WHERE conversation=?").get(conversation);
-    if (latest?.last !== last) throw new Error("Conversation changed during compaction");
-    const changed = this.db.prepare(`
-      UPDATE active_context SET messages=?, files=NULL,
-        output_files=(SELECT output_files FROM active_context WHERE conversation=? AND sequence<=? AND output_files IS NOT NULL ORDER BY sequence DESC LIMIT 1)
-      WHERE conversation=? AND sequence=?
-    `).run(JSON.stringify([summary]),conversation,through,conversation,through);
-    if (changed.changes !== 1) throw new Error("Missing compaction boundary");
-    this.db.prepare("DELETE FROM active_context WHERE conversation=? AND sequence<?").run(conversation,through);
+  compact(conversation:string, replacement:ContextReplacement) {
+    const {first,through,summary}=replacement;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      // An appended turn can coexist with this snapshot. A changed prefix cannot.
+      const current=this.db.prepare("SELECT min(sequence) AS first FROM active_context WHERE conversation=?").get(conversation);
+      if (current?.first !== first) throw new Error("Conversation prefix changed during compaction");
+      const changed = this.db.prepare(`
+        UPDATE active_context SET messages=?, files=NULL,
+          output_files=(SELECT output_files FROM active_context WHERE conversation=? AND sequence<=? AND output_files IS NOT NULL ORDER BY sequence DESC LIMIT 1)
+        WHERE conversation=? AND sequence=?
+      `).run(JSON.stringify([summary]),conversation,through,conversation,through);
+      if (changed.changes !== 1) throw new Error("Missing compaction boundary");
+      this.db.prepare("DELETE FROM active_context WHERE conversation=? AND sequence<?").run(conversation,through);
+      this.db.exec("COMMIT");
+    } catch(error) { this.db.exec("ROLLBACK"); throw error; }
   }
   lookup(conversation: string, request: string) {
     return this.db.prepare("SELECT id,question,answer,status,attachment,sticker_id AS stickerId FROM turns WHERE conversation=? AND request=?").get(conversation,request);
@@ -287,14 +292,13 @@ export class Journal {
       throw error;
     }
   }
-  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = [], replacement?: ContextReplacement, stickerId?:string) {
+  complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = [], stickerId?:string) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const turn = this.db.prepare("UPDATE turns SET answer=?,sticker_id=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
         .get(answer,stickerId??null,id);
       if (!turn) throw new Error("Turn is no longer pending");
       this.db.prepare("DELETE FROM operation_receipts WHERE turn_id=?").run(id);
-      if (replacement) this.replacePrefix(String(turn.conversation),replacement);
       const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until,remote,inline_at) VALUES(?,?,?,?,?,?,?,?,?)");
       outputs.forEach((f,i) => insert.run(f.key,id,i,f.name,f.mime,f.size,f.until,f.remote,f.inlineAt??null));
       this.db.prepare("INSERT INTO active_context(conversation,messages,files,output_files) VALUES(?,?,?,?)")
