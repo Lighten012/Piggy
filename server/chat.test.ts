@@ -37,6 +37,7 @@ test("records accepted mobile turns and restores context after restart", async t
   let summaryUnavailable = false;
   let transientCounts = 0;
   let unavailableCounts = 0;
+  let countRequests = 0;
   const imageUploads:string[] = [];
   let fileNumber=0;
   const fixture = createServer(async (req, res) => {
@@ -94,6 +95,7 @@ test("records accepted mobile turns and restores context after restart", async t
       assert.equal(replies.length,100);
     }
     if (req.url === "/v1/responses/input_tokens") {
+      countRequests++;
       if (users.at(-1) === "unknown") unavailableCounts++;
       if (users.at(-1) === "unknown" || (users.at(-1) === "retry count" && ++transientCounts === 1)) { res.writeHead(503); res.end(); return; }
       const tokens = users.includes("old-marker") ? (users.includes("large attachment question") ? limit + 1200 :
@@ -242,7 +244,9 @@ test("records accepted mobile turns and restores context after restart", async t
   const setModel = (headers, value) => fetch(worker.base+"/model-settings",{method:"PUT",headers,body:JSON.stringify(value)});
   assert.notEqual((await setModel(mobile,defaultSettings)).status,200);
   assert.equal((await setModel(admin,{...defaultSettings,tier:"unsupported"})).status,400);
+  const beforeFirst = countRequests;
   const first = await send("one",request);
+  assert.equal(countRequests - beforeFirst, 1, "ordinary turn must count the submitted payload only once");
   assert.deepEqual(first[0].context,{used:11,limit});
   assert.equal(first[1].delta,"OK");
   assert.equal(first.at(-1).session,session);
@@ -466,7 +470,9 @@ test("records accepted mobile turns and restores context after restart", async t
   assert.deepEqual(profiles,{chat:updated,work:workProfile});
   const shared = randomUUID();
   assert.equal((await send("settings-probe",randomUUID(),shared)).at(-1).done,true);
+  const beforeWork = countRequests;
   assert.equal((await send("work-mode-probe",randomUUID(),shared,"work")).at(-1).done,true);
+  assert.equal(countRequests - beforeWork, 1, "Terra counts a turn with existing history only once");
   assert.equal((await send("back to chat",randomUUID(),shared,"chat")).at(-1).done,true);
   assert.deepEqual(histories.at(-1),["settings-probe","work-mode-probe","back to chat"]);
   assert.equal((await fetch(worker.base+"/chat",{method:"POST",headers:mobile,

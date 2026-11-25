@@ -230,7 +230,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     try {
       const messages = journal.contextMessages(data.session) as Message[];
       const input = wireInput(model,systemInstructions(),messages);
-      const tools = convertResponsesTools(toolDeclarations, {supportsStrictMode:true});
+      const tools = convertResponsesTools(toolDeclarations, {supportsStrictMode:model.compat?.supportsStrictMode ?? false});
       const previous = journal.previousOutputs(data.session).filter(f=>f.until>Date.now()).map(f=>f.remote);
       const usage = await countInput(model, input, [...tools, ...toolsForInput(input,previous,messages)]);
       res.writeHead(200,{"Content-Type":"application/json"});
@@ -282,12 +282,18 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
   const systemPrompt = systemInstructions() + (proactive ? "\n这是管理员安排的定时任务。你正在主动给对方发消息。最后一条指令来自定时器，不能把它说成对方刚发来的话。直接写给对方。" : "");
 
   const controller = new AbortController();
+  let countMs = 0, countChecks = 0;
+  let firstTextMs: number | undefined;
   let cache: {input:unknown[]; tools:unknown[]; usage:ContextUsage} | undefined;
   async function count(input:unknown[], tools:unknown[], signal?:AbortSignal) {
     if (cache && isDeepStrictEqual(input,cache.input) && isDeepStrictEqual(tools,cache.tools)) return cache.usage;
-    const usage = await countChatInput(model,input,tools,signal);
-    cache = {input,tools,usage};
-    return usage;
+    const start = performance.now();
+    countChecks++;
+    try {
+      const usage = await countChatInput(model,input,tools,signal);
+      cache = {input,tools,usage};
+      return usage;
+    } finally { countMs += performance.now() - start; }
   }
   let agent:Agent | undefined;
   const stop = () => { controller.abort(); agent?.abort(); };
@@ -311,7 +317,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     const toolFailures:{name:string;args:unknown;content:unknown}[]=[];
     let stopTools=false;
     const permittedTools = proactive ? toolsForTurn.filter(tool=>["search_memory","search_chat_history","read_chat_context","send_sticker","read_cycle_calendar"].includes(tool.name)) : toolsForTurn;
-    const declared = convertResponsesTools(permittedTools,{supportsStrictMode:true});
+    const declared = convertResponsesTools(permittedTools,{supportsStrictMode:model.compat?.supportsStrictMode ?? false});
     agent = newAgent(permittedTools,model,settings,outputs,search,availableIds,systemPrompt,count,
       tier => { actualTier = tier; }, context => emit({context}), message => { failure = message; preflightFailure = true; },()=>stopTools);
     unsubscribe = agent.subscribe(event => {
@@ -327,7 +333,10 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
       }
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         partial += event.assistantMessageEvent.delta;
-        if(!stickerOnly) emit({ delta: event.assistantMessageEvent.delta });
+        if(!stickerOnly && event.assistantMessageEvent.delta) {
+          firstTextMs ??= Date.now()-started;
+          emit({delta:event.assistantMessageEvent.delta});
+        }
       }
     });
     const current:FileMessage = {fileRefs:files,role:"user",content:question,timestamp:Date.now()};
@@ -369,7 +378,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     committed = true;
     emit({ done:true, session:conversation, answer, ...(stickerId?{stickerId}:{}), replyFiles:journal.replyFiles(id) });
     console.info(JSON.stringify({event:"chat", mode, owner:proactive?"scheduler":"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", compacted:!!prepared.replacement, webSearchUsed:search.used,
-      durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
+      durationMs:Date.now()-started, firstTextMs, countChecks, countMs:Math.round(countMs), inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
   } catch (error) {
     if (committed) return;
