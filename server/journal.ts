@@ -14,7 +14,7 @@ export interface Attachment {
   id: string; name: string; size: number; image: number; remote: string; expires: number;
 }
 
-import type { ModelSettings } from "./model-settings.ts";
+import type { ModelSettings, ReplyMode } from "./model-settings.ts";
 
 type ContextMessage = AgentMessage & {fileRefs?: Attachment[]};
 export interface ContextTurn { sequence: number; messages: ContextMessage[] }
@@ -47,7 +47,7 @@ export class Journal {
         id INTEGER PRIMARY KEY CHECK(id=1), phrases TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS model_settings (
-        id INTEGER PRIMARY KEY CHECK(id=1), model TEXT NOT NULL, effort TEXT NOT NULL, tier TEXT NOT NULL
+        mode TEXT PRIMARY KEY NOT NULL CHECK(mode IN ('chat','work')), model TEXT NOT NULL, effort TEXT NOT NULL, tier TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS turns (
         id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, request TEXT NOT NULL,
@@ -88,6 +88,16 @@ export class Journal {
     `);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('local_files') WHERE name='provider_name'").get())
       this.db.exec("ALTER TABLE local_files ADD COLUMN provider_name TEXT");
+    if (this.db.prepare("SELECT 1 FROM pragma_table_info('model_settings') WHERE name='id'").get()) {
+      this.db.exec(`BEGIN IMMEDIATE;
+        ALTER TABLE model_settings RENAME TO legacy_model_settings;
+        CREATE TABLE model_settings (
+          mode TEXT PRIMARY KEY NOT NULL CHECK(mode IN ('chat','work')), model TEXT NOT NULL, effort TEXT NOT NULL, tier TEXT NOT NULL
+        );
+        INSERT INTO model_settings SELECT 'chat',model,effort,tier FROM legacy_model_settings WHERE id=1;
+        DROP TABLE legacy_model_settings;
+        COMMIT`);
+    }
     this.stickers=new StickerLibrary(this.db);
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='sticker_id'").get())
       this.db.exec("ALTER TABLE turns ADD COLUMN sticker_id TEXT REFERENCES stickers(id)");
@@ -120,12 +130,12 @@ export class Journal {
     this.db.prepare("INSERT INTO reply_phrases VALUES(1,?) ON CONFLICT(id) DO UPDATE SET phrases=excluded.phrases")
       .run(JSON.stringify(phrases));
   }
-  modelSettings(): ModelSettings | undefined {
-    return this.db.prepare("SELECT model,effort,tier FROM model_settings WHERE id=1").get() as ModelSettings | undefined;
+  modelSettings(mode: ReplyMode): ModelSettings | undefined {
+    return this.db.prepare("SELECT model,effort,tier FROM model_settings WHERE mode=?").get(mode) as ModelSettings | undefined;
   }
-  saveModelSettings({model,effort,tier}: ModelSettings) {
-    this.db.prepare("INSERT INTO model_settings VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET model=excluded.model, effort=excluded.effort, tier=excluded.tier")
-      .run(model,effort,tier);
+  saveModelSettings(mode: ReplyMode, {model,effort,tier}: ModelSettings) {
+    this.db.prepare("INSERT INTO model_settings(mode,model,effort,tier) VALUES(?,?,?,?) ON CONFLICT(mode) DO UPDATE SET model=excluded.model, effort=excluded.effort, tier=excluded.tier")
+      .run(mode,model,effort,tier);
   }
 
   memoryIndex(baseUrl:string,key:string) {

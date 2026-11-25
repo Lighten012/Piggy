@@ -9,10 +9,11 @@ const loading = ref(false);
 const error = ref("");
 const controller = new AbortController();
 
-const draft = ref(null);
-const saving = ref(false);
-const feedback = ref("");
-const saveError = ref(false);
+const modes = [{id:"chat",name:"聊天模式"}, {id:"work",name:"工作模式"}];
+const drafts = ref({});
+const saving = ref("");
+const feedback = ref({});
+const saveError = ref({});
 const phrases = ref("");
 const savingPhrases = ref(false);
 const phraseFeedback = ref("");
@@ -34,28 +35,32 @@ async function savePhrases() {
 }
 const effortLabels = {off:"关闭",low:"低",medium:"中",high:"高",xhigh:"极高",max:"最高"};
 const tierLabels = {default:"标准",priority:"快速 · Fast",ultrafast:"极速 · Ultrafast"};
-const choice = computed(() => catalog.value?.models.find(m => m.id === draft.value?.model));
-const dirty = computed(() => draft.value && ["model","effort","tier"].some(k => draft.value[k] !== catalog.value.active[k]));
+const choice = mode => catalog.value.models.find(m => m.id === drafts.value[mode].model);
+const changed = mode => ["model","effort","tier"].some(k => drafts.value[mode][k] !== catalog.value.profiles[mode][k]);
+const dirty = computed(() => catalog.value && modes.some(({id}) => changed(id)));
 
-function switchModel() {
-  if (!choice.value.efforts.includes(draft.value.effort)) draft.value.effort = choice.value.efforts[0];
-  if (!choice.value.tiers.includes(draft.value.tier)) draft.value.tier = "default";
+function switchModel(mode) {
+  const draft = drafts.value[mode];
+  const selected = choice(mode);
+  if (!selected.efforts.includes(draft.effort)) draft.effort = selected.efforts[0];
+  if (!selected.tiers.includes(draft.tier)) draft.tier = "default";
 }
-async function save() {
-  if (!dirty.value || saving.value) return;
-  saving.value = true;
-  feedback.value = "";
+async function save(mode) {
+  if (!changed(mode) || saving.value) return;
+  saving.value = mode;
+  feedback.value[mode] = "";
   try {
     const res = await fetch("/model-settings",{method:"PUT",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(draft.value),signal:controller.signal});
+      body:JSON.stringify({mode,...drafts.value[mode]}),signal:controller.signal});
     if (!res.ok) throw new Error(res.status === 401 ? "请刷新页面后重新登录" : "保存失败，请重试");
-    catalog.value.active = await res.json();
-    draft.value = {...catalog.value.active};
-    saveError.value = false;
-    feedback.value = "已保存，将用于手机的下一条消息。";
+    const saved = await res.json();
+    catalog.value.profiles[mode] = saved;
+    drafts.value[mode] = {...saved};
+    saveError.value[mode] = false;
+    feedback.value[mode] = "已保存，下次使用此模式时生效。";
   } catch (e) {
-    if (e.name !== "AbortError") { saveError.value = true; feedback.value = e.message; }
-  } finally { saving.value = false; }
+    if (e.name !== "AbortError") { saveError.value[mode] = true; feedback.value[mode] = e.message; }
+  } finally { saving.value = ""; }
 }
 async function reload() {
   if (loading.value || saving.value) return;
@@ -69,8 +74,8 @@ async function reload() {
     catalog.value = data;
     phrases.value = data.replyPhrases.join("\n");
     phraseFeedback.value = "";
-    draft.value = {...data.active};
-    feedback.value = "";
+    drafts.value = Object.fromEntries(modes.map(({id}) => [id, {...data.profiles[id]}]));
+    feedback.value = {};
   } catch (e) {
     if (e.name !== "AbortError") error.value = e.message;
   } finally {
@@ -86,27 +91,29 @@ onUnmounted(() => controller.abort());
     <p v-if="error" role="alert" class="alert">{{ error }}</p>
     <p v-if="loading" role="status">正在读取能力清单…</p>
     <template v-if="catalog">
-      <section aria-labelledby="model-title" v-if="choice">
-        <h2 id="model-title">手机对话模型</h2>
-        <p class="empty-note">保存后从手机的下一条消息生效。</p>
-        <form @submit.prevent="save" @change="feedback = ''">
+      <section aria-labelledby="model-title">
+        <h2 id="model-title">手机模式</h2>
+
+        <form v-for="{id, name} in modes" :key="id" @submit.prevent="save(id)" @change="feedback[id] = ''">
+          <h3>{{ name }}</h3>
           <fieldset :disabled="saving || loading">
-            <div class="field"><label for="chat-model">模型</label><select id="chat-model" v-model="draft.model" @change="switchModel">
+            <div class="field"><label :for="id + '-model'">模型</label><select :id="id + '-model'" v-model="drafts[id].model" @change="switchModel(id)">
               <option v-for="m in catalog.models" :key="m.id" :value="m.id">{{ m.name }}</option>
             </select></div>
-            <div class="field"><label for="chat-effort">思考强度</label><select id="chat-effort" v-model="draft.effort">
-              <option v-for="e in choice.efforts" :key="e" :value="e">{{ effortLabels[e] }}</option>
+            <div class="field"><label :for="id + '-effort'">思考强度</label><select :id="id + '-effort'" v-model="drafts[id].effort">
+              <option v-for="e in choice(id).efforts" :key="e" :value="e">{{ effortLabels[e] }}</option>
             </select></div>
-            <div class="field"><label for="chat-tier">回复速度</label><select id="chat-tier" v-model="draft.tier" aria-describedby="speed-note">
-              <option v-for="t in choice.tiers" :key="t" :value="t">{{ tierLabels[t] }}</option>
+            <div class="field"><label :for="id + '-tier'">回复速度</label><select :id="id + '-tier'" v-model="drafts[id].tier" aria-describedby="speed-note">
+              <option v-for="t in choice(id).tiers" :key="t" :value="t">{{ tierLabels[t] }}</option>
             </select></div>
           </fieldset>
-          <p id="speed-note" class="empty-note">快速和极速由 OpenAI 按更高费率计费，实际可用性取决于账号额度。</p>
+
           <div class="save-row">
-            <button class="save" :disabled="!dirty || saving || loading">{{ saving ? "正在保存…" : "保存设置" }}</button>
-            <span role="status" :class="{problem:saveError}">{{ feedback }}</span>
+            <button class="save" :disabled="!changed(id) || saving || loading">{{ saving === id ? "正在保存…" : "保存" + name }}</button>
+            <span role="status" :class="{problem:saveError[id]}">{{ feedback[id] }}</span>
           </div>
         </form>
+        <p id="speed-note" class="empty-note">快速和极速由 OpenAI 按更高费率计费，实际可用性取决于账号额度。</p>
       </section>
       <section aria-labelledby="phrases-title">
         <h2 id="phrases-title">回复等待短句</h2>
@@ -144,6 +151,7 @@ onUnmounted(() => controller.abort());
 .catalog {overflow:auto;padding-bottom:32px}
 .heading {display:flex;align-items:center;justify-content:space-between;gap:16px}
 .reload {font:inherit;font-size:.9rem;color:var(--berry);background:transparent;border:1px solid #d8c3c8;border-radius:22px;padding:6px 18px;min-height:40px;cursor:pointer}
+h3 {margin:20px 0 0;font-size:1rem}
 fieldset {display:grid;grid-template-columns:1.45fr 1fr 1.15fr;gap:14px;border:0;margin:18px 0 0;padding:0;min-width:0}
 .field {display:grid;gap:6px;min-width:0}
 label {font-size:.9rem;font-weight:600}

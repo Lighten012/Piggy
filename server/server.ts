@@ -19,7 +19,7 @@ import { toolDeclarations, capabilityCatalog, loadedSkills } from "./capabilitie
 import { memoryTool, memoryReadTools } from "./memory.ts";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { defaultSettings, modelChoices, resolveModel, validSettings, type ModelSettings } from "./model-settings.ts";
+import { defaultSettings, defaultWorkSettings, isReplyMode, type ReplyMode, modelChoices, resolveModel, validSettings, type ModelSettings } from "./model-settings.ts";
 import { convertResponsesMessages, convertResponsesTools } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import type { Message } from "@earendil-works/pi-ai";
@@ -69,8 +69,8 @@ async function syncMemories() {
 }
 if (apiKey) void syncMemories();
 
-function activeSettings() {
-  const current = journal.modelSettings() ?? defaultSettings;
+function activeSettings(mode: ReplyMode = "chat") {
+  const current = journal.modelSettings(mode) ?? (mode === "work" ? defaultWorkSettings : defaultSettings);
   if (!validSettings(current)) throw new Error("Unsupported stored model settings");
   return current;
 }
@@ -218,7 +218,9 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
   try { data = JSON.parse(Buffer.concat(chunks).toString()); }
   catch { return reject(res, 400, "请求格式有误"); }
   if (!proactive && data?.session !== req.headers["x-piggy-session"]) return reject(res,403,"对话编号与当前安装不符");
-  const settings = activeSettings();
+  const mode = data?.mode === undefined ? "chat" : data.mode;
+  if (!isReplyMode(mode)) return reject(res,400,"对话模式无效");
+  const settings = activeSettings(mode);
   const model = resolveModel(settings,baseUrl);
   if (preview) {
     if (typeof data?.session !== "string" || !uuid.test(data.session)) return reject(res,400,"对话编号无效");
@@ -366,7 +368,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     journal.complete(id, answer, proactive ? [last] : agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, prepared.replacement, stickerId);
     committed = true;
     emit({ done:true, session:conversation, answer, ...(stickerId?{stickerId}:{}), replyFiles:journal.replyFiles(id) });
-    console.info(JSON.stringify({event:"chat", owner:proactive?"scheduler":"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", compacted:!!prepared.replacement, webSearchUsed:search.used,
+    console.info(JSON.stringify({event:"chat", mode, owner:proactive?"scheduler":"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", compacted:!!prepared.replacement, webSearchUsed:search.used,
       durationMs:Date.now()-started, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
   } catch (error) {
@@ -381,7 +383,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
       emit({done:true,session:conversation,answer:receipt,replyFiles:[]});
       return;
     }
-    console.info(JSON.stringify({event:"chat", owner:"mobile", status:"failed", durationMs:Date.now()-started}));
+    console.info(JSON.stringify({event:"chat", mode, owner:"mobile", status:"failed", durationMs:Date.now()-started}));
     if (!res.destroyed) emit({ error: failure });
   } finally {
     clearInterval(heartbeat);
@@ -413,9 +415,11 @@ async function saveSettings(req: IncomingMessage, res: ServerResponse, phrases =
     return res.end(JSON.stringify(list));
   }
   if (!validSettings(settings)) return reject(res,400,"此模型、思考强度或速度组合不可用");
-  journal.saveModelSettings(settings);
+  const mode = "mode" in settings ? settings.mode : "chat";
+  if (!isReplyMode(mode)) return reject(res,400,"对话模式无效");
+  journal.saveModelSettings(mode,settings);
   res.writeHead(200,{"Content-Type":"application/json"});
-  res.end(JSON.stringify(activeSettings()));
+  res.end(JSON.stringify(activeSettings(mode)));
 }
 async function syncCycle(req:IncomingMessage,res:ServerResponse) {
   const chunks:Buffer[]=[];
@@ -458,7 +462,7 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === "/capabilities" && req.headers["x-piggy-owner"] === "admin" &&
       (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, {"Content-Type":"application/json"});
-    res.end(req.method === "HEAD" ? undefined : JSON.stringify({...capabilityCatalog(), models:modelChoices, active:activeSettings(), replyPhrases:journal.replyPhrases()}));
+    res.end(req.method === "HEAD" ? undefined : JSON.stringify({...capabilityCatalog(), models:modelChoices, active:activeSettings(), profiles:{chat:activeSettings(),work:activeSettings("work")}, replyPhrases:journal.replyPhrases()}));
     return;
   }
   if (url.pathname === "/reply-phrases") {

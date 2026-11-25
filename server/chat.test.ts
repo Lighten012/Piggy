@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { defaultSettings, modelChoices } from "./model-settings.ts";
+import { defaultSettings, defaultWorkSettings, modelChoices } from "./model-settings.ts";
 import { persona } from "./persona.ts";
 import { capabilityCatalog } from "./capabilities.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -72,7 +72,8 @@ test("records accepted mobile turns and restores context after restart", async t
     }
     for (const i of payload.input) if (i.type==="function_call_output" && Array.isArray(i.output)) recalledInputs.push(...i.output);
     const changed = payload.input.some(i => JSON.stringify(i.content ?? "").includes("settings-probe"));
-    assert.equal(payload.model, changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
+    const workProbe = payload.input.filter(i => i.role === "user").at(-1)?.content.some(part => part.text === "work-mode-probe");
+    assert.equal(payload.model, !workProbe && changed ? "gpt-6.2-astra" : "gpt-6.2-sol");
     assert.ok(payload.tools.some((tool: {type:string}) => tool.type === "web_search"));
     for (const [name,argument] of [["save_memory","text"],["search_memory","query"]]) {
       const tool = payload.tools.find((entry:{name?:string}) => entry.name === name);
@@ -102,8 +103,8 @@ test("records accepted mobile turns and restores context after restart", async t
       return;
     }
     assert.equal(req.url, "/v1/responses");
-    assert.equal(payload.reasoning.effort, changed ? "max" : "high");
-    assert.equal(payload.service_tier, changed ? "ultrafast" : "default");
+    assert.equal(payload.reasoning.effort, workProbe ? "medium" : changed ? "max" : "high");
+    assert.equal(payload.service_tier, workProbe ? "priority" : changed ? "ultrafast" : "default");
     assert.equal(payload.max_output_tokens, 16384);
     histories.push(users);
     if (users.at(-1) === "detached transport probe") {
@@ -221,14 +222,14 @@ test("records accepted mobile turns and restores context after restart", async t
     }
     return rawFetch(url,{...options,headers});
   }
-  async function send(text:string, request = randomUUID(), context = session) {
-    const res = await fetch(worker.base+"/chat",{method:"POST",headers:mobile,body:JSON.stringify({text,session:context,request})});
+  async function send(text:string, request = randomUUID(), context = session, mode?: string) {
+    const res = await fetch(worker.base+"/chat",{method:"POST",headers:mobile,body:JSON.stringify({text,session:context,request,mode})});
     assert.equal(res.status,200);
     return (await res.text()).trim().split("\n").map(line=>JSON.parse(line));
   }
   assert.equal((await fetch(worker.base+"/capabilities")).status,401);
   assert.notEqual((await fetch(worker.base+"/capabilities",{headers:mobile})).status,200);
-  assert.deepEqual(await (await fetch(worker.base+"/capabilities",{headers:admin})).json(),{...capabilityCatalog(),models:modelChoices,active:defaultSettings,replyPhrases:["小猪正在努力回复中","小猪正在为你寻找答案","Piggy 正在加油哦"]});
+  assert.deepEqual(await (await fetch(worker.base+"/capabilities",{headers:admin})).json(),{...capabilityCatalog(),models:modelChoices,active:defaultSettings,profiles:{chat:defaultSettings,work:defaultWorkSettings},replyPhrases:["小猪正在努力回复中","小猪正在为你寻找答案","Piggy 正在加油哦"]});
   const savePhrases = (headers, value) => fetch(worker.base+"/reply-phrases",{method:"PUT",headers,body:JSON.stringify(value)});
   assert.equal((await savePhrases(mobile,["不要写入"])).status,405);
   assert.equal((await savePhrases(admin,[])).status,400);
@@ -452,10 +453,20 @@ test("records accepted mobile turns and restores context after restart", async t
 
   const updated = {model:"gpt-6.2-astra",effort:"max",tier:"ultrafast"};
   assert.deepEqual(await (await setModel(admin,updated)).json(),updated);
+  const workProfile = {...defaultSettings,effort:"medium",tier:"priority"};
+  assert.equal((await setModel(admin,{...updated,mode:"other"})).status,400);
+  assert.deepEqual(await (await setModel(admin,{...workProfile,mode:"work"})).json(),workProfile);
   const exit=once(worker.child,"exit");worker.child.kill();await exit;
   worker=await start();
-  assert.deepEqual((await (await fetch(worker.base+"/capabilities",{headers:admin})).json()).active,updated);
-  assert.equal((await send("settings-probe",randomUUID(),randomUUID())).at(-1).done,true);
+  const profiles = (await (await fetch(worker.base+"/capabilities",{headers:admin})).json()).profiles;
+  assert.deepEqual(profiles,{chat:updated,work:workProfile});
+  const shared = randomUUID();
+  assert.equal((await send("settings-probe",randomUUID(),shared)).at(-1).done,true);
+  assert.equal((await send("work-mode-probe",randomUUID(),shared,"work")).at(-1).done,true);
+  assert.equal((await send("back to chat",randomUUID(),shared,"chat")).at(-1).done,true);
+  assert.deepEqual(histories.at(-1),["settings-probe","work-mode-probe","back to chat"]);
+  assert.equal((await fetch(worker.base+"/chat",{method:"POST",headers:mobile,
+    body:JSON.stringify({text:"invalid",session:shared,mode:"other"})})).status,400);
 
   {
     const phone=randomUUID(), other=randomUUID();
@@ -483,6 +494,19 @@ test("records accepted mobile turns and restores context after restart", async t
     schedulesDB.close();
   }
 
+});
+
+test("legacy model configuration becomes the chat profile", t => {
+  const dir=mkdtempSync(join(tmpdir(),"piggy-model-migration-"));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,"old.sqlite");
+  const old=new DatabaseSync(path);
+  old.exec("CREATE TABLE model_settings(id INTEGER PRIMARY KEY CHECK(id=1),model TEXT,effort TEXT,tier TEXT)");
+  old.prepare("INSERT INTO model_settings VALUES(1,?,?,?)").run("gpt-6.2-sol","low","priority");
+  old.close();
+  const journal=new Journal(path);
+  assert.deepEqual({...journal.modelSettings("chat")},{model:"gpt-6.2-sol",effort:"low",tier:"priority"});
+  assert.equal(journal.modelSettings("work"),undefined);
 });
 
 test("history pages and interrupted turns survive reopening SQLite", t => {

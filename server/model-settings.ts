@@ -2,6 +2,9 @@ import { createModels, type Model } from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 
 export interface ModelSettings { model: string; effort: string; tier: string }
+export type ReplyMode = "chat" | "work";
+export const isReplyMode = (value: unknown): value is ReplyMode => value === "chat" || value === "work";
+export const defaultWorkSettings: ModelSettings = {model:"gpt-6.2-astra", effort:"high", tier:"default"};
 interface Choice { id: string; name: string; efforts: string[]; tiers: string[] }
 
 const family = new Map<string,Model<"openai-responses">>();

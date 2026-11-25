@@ -29,6 +29,10 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     private val connections = ConcurrentHashMap.newKeySet<HttpsURLConnection>()
     private val prefs = context.getSharedPreferences("conversation", Context.MODE_PRIVATE)
     private val session = CycleSync.session(this.context)
+    var replyMode: String
+        get() = prefs.getString("replyMode", "chat") ?: "chat"
+        set(value) { prefs.edit().putString("replyMode", value).apply() }
+    private val pendingMode: String get() = prefs.getString("pendingMode", "chat") ?: "chat"
     val recent: JSONArray get() = JSONArray(prefs.getString("recent", "[]"))
     val draft: String get() = prefs.getString("composer", prefs.getString("pendingDraft", "")).orEmpty()
     val pendingDraft: String get() = prefs.getString("pendingDraft", "").orEmpty()
@@ -54,11 +58,11 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     fun endFlight() { prefs.edit().remove("sending").commit() }
 
     fun beginSend(text: String, draft: String, retry: Boolean): Boolean {
-        val id = prefs.getString("pendingId", null)?.takeIf { prefs.getString("pendingText", null) == text }
+        val id = prefs.getString("pendingId", null)?.takeIf { prefs.getString("pendingText", null) == text && (retry || pendingMode == replyMode) }
             ?: UUID.randomUUID().toString()
         val edit = prefs.edit().putString("pendingText", text).putString("pendingDraft", draft)
             .putBoolean("sending", true).putString("pendingId", id).putBoolean("pendingSeparate", true)
-        if (!retry) edit.putString("composer", "").putString("pendingFiles", JSONArray(attachments).toString())
+        if (!retry) edit.putString("pendingMode", replyMode).putString("composer", "").putString("pendingFiles", JSONArray(attachments).toString())
             .remove("files").remove("file")
         return edit.commit()
     }
@@ -284,12 +288,12 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         return ContextUsage(used, limit)
     }
 
-    fun readContext(finished: (ContextUsage?) -> Unit) = contextWorker.execute {
+    fun readContext(mode: String, finished: (ContextUsage?) -> Unit) = contextWorker.execute {
         var current: ContextUsage? = null
         runCatching {
             post(PiggyServer.url("/mobile/context"), { http ->
                 http.setRequestProperty("Content-Type","application/json")
-                http.outputStream.use { it.write(JSONObject().put("session",session).toString().toByteArray()) }
+                http.outputStream.use { it.write(JSONObject().put("session",session).put("mode",mode).toString().toByteArray()) }
             }) { http ->
                 current = usage(JSONObject(http.inputStream.bufferedReader().use { it.readText() }))
             }
@@ -335,7 +339,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
             }
             ui { status(ReplyPhrases.WAITING) }
             retryNetwork(status) { CycleSync.sync(context, true) }
-            val data = JSONObject().put("timeZone", java.util.TimeZone.getDefault().id).put("text",text).put("session",session).put("request",id)
+            val data = JSONObject().put("timeZone", java.util.TimeZone.getDefault().id).put("text",text).put("session",session).put("request",id).put("mode",pendingMode)
             if (files.isNotEmpty()) data.put("attachments",JSONArray(files.map { it.getString("id") }))
             retryNetwork(status) {
                 post(endpoint, { http ->

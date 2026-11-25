@@ -108,6 +108,7 @@ class ChatActivity : Activity() {
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
+        client = PiggyClient(this) { updater.check() }
         val header = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), 0, dp(12), 0)
@@ -118,6 +119,7 @@ class ChatActivity : Activity() {
         header.addView(mark(), LinearLayout.LayoutParams(dp(28), dp(28)).apply { leftMargin = dp(3) })
         header.addView(text(getString(R.string.app_name), 18f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) },
             LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(8) })
+        header.addView(modeSwitch(), LinearLayout.LayoutParams(wrap, dp(48)).apply { leftMargin = dp(8) })
         header.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         contextMeter = ContextMeter(this).apply { setOnClickListener { showContext() } }
         header.addView(contextMeter, wrap, dp(48))
@@ -236,7 +238,6 @@ class ChatActivity : Activity() {
         gate.addView(card, LinearLayout.LayoutParams(match, wrap))
         root.addView(gate, LinearLayout.LayoutParams(match, 0, 1f))
         setContentView(root)
-        client = PiggyClient(this) { updater.check() }
         attachmentActions.awaitingPermission = state?.getString("savingAttachment")?.let { JSONObject(it) }
         client.lastUsage?.let(contextMeter::update)
         updater = AppUpdater(this, ::showVersion)
@@ -252,6 +253,44 @@ class ChatActivity : Activity() {
         if (client.pendingSeparate && !client.inFlight) showPendingError("上一条消息尚未确认送达")
         showFile()
         updater.checkOnLaunch()
+    }
+
+    private fun modeSwitch(): LinearLayout {
+        val group = LinearLayout(this)
+        fun inset(color: Int, vertical: Int) = android.graphics.drawable.InsetDrawable(
+            shape(color, 18), 0, dp(vertical), 0, dp(vertical))
+        group.background = inset(0xfff0edf3.toInt(), 8)
+        group.setPadding(dp(3), 0, dp(3), 0)
+        fun select(button: TextView, mode: String) {
+            val selected = mode == client.replyMode
+            button.isSelected = selected
+            button.setTextColor(if (selected) 0xff49335d.toInt() else 0xff696370.toInt())
+            button.typeface = Typeface.create(if (selected) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+            button.background = RippleDrawable(ColorStateList.valueOf(0x2277558f),
+                inset(if (selected) 0xffe1d2ef.toInt() else Color.TRANSPARENT, 11), inset(Color.WHITE, 11))
+        }
+        for ((mode, label) in listOf("chat" to "聊天", "work" to "工作")) {
+            val button = text(label, 13f).apply {
+                tag = mode
+                gravity = Gravity.CENTER
+                isFocusable = true
+                contentDescription = label + "模式"
+                setOnClickListener {
+                    if (client.replyMode != mode) {
+                        client.replyMode = mode
+                        for (i in 0 until group.childCount) {
+                            val child = group.getChildAt(i) as TextView
+                            select(child, child.tag as String)
+                        }
+                        contextEpoch++
+                        refreshContext()
+                    }
+                }
+            }
+            select(button, mode)
+            group.addView(button, dp(48), match)
+        }
+        return group
     }
 
     private fun navButton(icon: Int, label: String, click: () -> Unit) = ImageButton(this).apply {
@@ -432,7 +471,7 @@ class ChatActivity : Activity() {
         if (readingContext || !versionCurrent || generating) return
         val epoch = contextEpoch
         readingContext = true
-        client.readContext { value ->
+        client.readContext(client.replyMode) { value ->
             readingContext = false
             if (epoch == contextEpoch) {
                 if (value != null) displayUsage(value)
