@@ -19,6 +19,8 @@ import android.text.TextWatcher
 import android.text.InputFilter
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.util.LruCache
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.core.view.ViewCompat
@@ -33,8 +35,9 @@ class ChatActivity : Activity() {
     private lateinit var menu: ImageButton
     private var drawer: Dialog? = null
     private lateinit var chat: FrameLayout
-    private lateinit var transcript: LinearLayout
-    private lateinit var scroll: ScrollView
+    private lateinit var pendingRows: LinearLayout
+    private lateinit var historyAdapter: HistoryAdapter
+    private lateinit var scroll: ListView
     private lateinit var empty: LinearLayout
     private lateinit var input: EditText
     private lateinit var attach: TextView
@@ -56,6 +59,7 @@ class ChatActivity : Activity() {
     private var readingContext = false
     private var versionCurrent = false
     private var selecting = false
+    private var followReply = true
     private var generating = false
     private var promptedVersion: String? = null
     private val ink = Color.rgb(48, 42, 54)
@@ -149,16 +153,33 @@ class ChatActivity : Activity() {
         val chatContent = column().apply {
             setPadding(dp(14), 0, dp(14), dp(8))
         }
-        scroll = ScrollView(this).apply { isFillViewport = true; isVerticalScrollBarEnabled = false }
-        transcript = column().apply { setPadding(dp(1), dp(14), dp(1), dp(6)) }
+        scroll = ListView(this).apply {
+            isStackFromBottom = true
+            divider = null
+            selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+            setItemsCanFocus(true)
+            setPadding(dp(1),dp(14),dp(1),dp(6))
+        }
+        pendingRows = column()
+        scroll.addFooterView(pendingRows, null, true)
+        scroll.setOnScrollListener(object : AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: AbsListView, state: Int) {
+                if (state == AbsListView.OnScrollListener.SCROLL_STATE_TOUCH_SCROLL) followReply = false
+            }
+            override fun onScroll(view: AbsListView, first: Int, visible: Int, total: Int) = Unit
+        })
+        historyAdapter = HistoryAdapter()
+        scroll.adapter = historyAdapter
         empty = column().apply {
             gravity = Gravity.CENTER
             addView(mark(), dp(58), dp(58))
             addView(text("今天想聊点什么？", 20f), LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(18) })
         }
-        transcript.addView(empty, LinearLayout.LayoutParams(match, 0, 1f))
-        scroll.addView(transcript)
-        chatContent.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
+        val historyArea = FrameLayout(this).apply {
+            addView(scroll, match, match)
+            addView(empty, match, match)
+        }
+        chatContent.addView(historyArea, LinearLayout.LayoutParams(match, 0, 1f))
         val composerCard = column().apply {
             background = shape(Color.WHITE, 26, true)
             setPadding(dp(4), dp(3), dp(4), dp(3))
@@ -622,12 +643,11 @@ class ChatActivity : Activity() {
             packageManager.canRequestPackageInstalls()) updater.install()
     }
 
-    private fun bubble(value: String, user: Boolean, files: List<JSONObject> = emptyList(), legacyLabel: String = "", stickerId: String = ""): TextView {
-        empty.visibility = View.GONE
+    private fun LinearLayout.bubble(value: String, user: Boolean, files: List<JSONObject> = emptyList(), legacyLabel: String = "", stickerId: String = ""): TextView {
         val row = column().apply { gravity = if (user) Gravity.END else Gravity.START }
         if (!user) {
             val role = text("Piggy", 12f, muted)
-            val byline = LinearLayout(this).apply {
+            val byline = LinearLayout(this@ChatActivity).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(5), 0, 0, dp(5))
                 addView(mark(), dp(22), dp(22))
@@ -710,7 +730,7 @@ class ChatActivity : Activity() {
             val file = JSONObject().put("key",stickerId).put("stickerId",stickerId).put("id",stickerId)
                 .put("name","Piggy-"+stickerId.take(8)+".png").put("mime","image/png")
                 .put("uri",PiggyServer.url("/mobile/stickers/"+stickerId).toString())
-            val sticker = ImageView(this).apply {
+            val sticker = ImageView(this@ChatActivity).apply {
                 contentDescription = "Piggy 表情"
                 isFocusable = true
                 scaleType = ImageView.ScaleType.FIT_CENTER
@@ -726,7 +746,7 @@ class ChatActivity : Activity() {
                 }
             }
         }
-        transcript.addView(row, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(15) })
+        addView(row, LinearLayout.LayoutParams(match, wrap).apply { bottomMargin = dp(15) })
         return view
     }
 
@@ -739,7 +759,7 @@ class ChatActivity : Activity() {
         if (view.minWidth != minimum) view.minWidth = minimum
     }
 
-    private fun toBottom() = scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+    private fun toBottom() = scroll.post { scroll.setSelectionFromTop(scroll.count - 1, scroll.height - scroll.paddingTop - scroll.paddingBottom - pendingRows.height) }
     private fun controls() {
         val enabled = versionCurrent && !generating && !selecting && !client.pendingSeparate
         attach.isEnabled = versionCurrent && !selecting
@@ -788,16 +808,41 @@ class ChatActivity : Activity() {
         if (intent.action == ReplyNotifications.OPEN_REPLY) toBottom()
     }
 
-    private fun renderHistory() {
-        transcript.removeViews(1, transcript.childCount - 1)
-        empty.visibility = View.VISIBLE
-        renderedInbox = client.inboxCursor
-        val recent = client.recent
-        for (i in 0 until recent.length()) {
-            val turn = recent.getJSONObject(i)
-            if (!turn.optBoolean("proactive")) bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
-            bubble(turn.getString("answer"), false, client.replyFiles(turn),stickerId=turn.optString("stickerId"))
+    private inner class HistoryAdapter : BaseAdapter() {
+        private val pages = LruCache<Int,List<JSONObject>>(3)
+        private var size = client.history.size()
+        fun refresh() {
+            val next = client.history.size()
+            if (next == size) return
+            pages.remove(size / ChatHistory.PAGE_SIZE)
+            size = next
+            notifyDataSetChanged()
         }
+        override fun getCount() = size
+        override fun getItemId(position: Int) = position.toLong()
+        override fun hasStableIds() = true
+        override fun getItem(position: Int): JSONObject {
+            val page = position / ChatHistory.PAGE_SIZE
+            val rows = pages.get(page) ?: client.history.page(page * ChatHistory.PAGE_SIZE).also { pages.put(page,it) }
+            return rows[position % ChatHistory.PAGE_SIZE]
+        }
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val group = convertView as? LinearLayout ?: column()
+            if (group.tag == position) return group
+            group.removeAllViews()
+            group.tag = position
+            val turn = getItem(position)
+            if (!turn.optBoolean("proactive")) group.bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
+            group.bubble(turn.getString("answer"), false, client.replyFiles(turn), stickerId=turn.optString("stickerId"))
+            return group
+        }
+    }
+
+    private fun renderHistory() {
+        pendingRows.removeAllViews()
+        historyAdapter.refresh()
+        empty.visibility = if (historyAdapter.count == 0) View.VISIBLE else View.GONE
+        renderedInbox = client.inboxCursor
     }
 
     private var replyWait: ReplyWait? = null
@@ -805,8 +850,9 @@ class ChatActivity : Activity() {
     private var renderedInbox = -1L
     private val inboxUpdated: () -> Unit = {
         if (chatVisible && versionCurrent && !generating && !client.inFlight && renderedInbox != client.inboxCursor) {
+            val follow = !scroll.canScrollVertically(1)
             renderHistory()
-            toBottom()
+            if (follow) toBottom()
             refreshContext()
         }
     }
@@ -844,14 +890,16 @@ class ChatActivity : Activity() {
 
     private fun watchSend() {
         val id = client.pendingId ?: run { client.endFlight(); showPendingError("请重试上一条消息"); return }
+        followReply = true
         generating = true
         contextEpoch++
         controls()
         sendError.visibility = View.GONE
         showFile()
         val files = client.pendingAttachments
-        bubble(client.pendingDraft, true, files)
-        val reply = bubble("", false)
+        empty.visibility = View.GONE
+        pendingRows.bubble(client.pendingDraft, true, files)
+        val reply = pendingRows.bubble("", false)
         val indicator = ReplyWait(reply)
         replyWait = indicator
         indicator.visible(chatVisible)
@@ -861,7 +909,7 @@ class ChatActivity : Activity() {
         var scheduled = false
         val render = Runnable {
             scheduled = false
-            val follow = !scroll.canScrollVertically(1)
+            val follow = followReply || !scroll.canScrollVertically(1)
             renderMessage(reply, source.toString())
             if (follow) toBottom()
         }
@@ -878,7 +926,7 @@ class ChatActivity : Activity() {
                 reply.removeCallbacks(render)
                 ChatSendService.listener = null
                 sendListener = null
-                val follow = !scroll.canScrollVertically(1)
+                val follow = followReply || !scroll.canScrollVertically(1)
                 renderHistory()
                 if (error == null) {
                     if (follow) toBottom()

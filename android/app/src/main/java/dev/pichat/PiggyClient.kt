@@ -33,7 +33,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         get() = prefs.getString("replyMode", "chat") ?: "chat"
         set(value) { prefs.edit().putString("replyMode", value).apply() }
     private val pendingMode: String get() = prefs.getString("pendingMode", "chat") ?: "chat"
-    val recent: JSONArray get() = JSONArray(prefs.getString("recent", "[]"))
+    internal val history = ChatHistory.get(this.context)
     val draft: String get() = prefs.getString("composer", prefs.getString("pendingDraft", "")).orEmpty()
     val pendingDraft: String get() = prefs.getString("pendingDraft", "").orEmpty()
     val pendingSeparate: Boolean get() = prefs.getBoolean("pendingSeparate", false)
@@ -172,8 +172,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     @Synchronized private fun releaseFile(file: JSONObject) {
         val uri = file.getString("uri")
         if ((attachments + pendingAttachments).any { it.getString("uri") == uri }) return
-        val history = recent
-        if ((0 until history.length()).any { i -> turnFiles(history.getJSONObject(i)).any { it.optString("uri") == uri } }) return
+        if (history.references(uri)) return
         runCatching { context.contentResolver.releasePersistableUriPermission(
             Uri.parse(uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
@@ -251,26 +250,19 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                 http.outputStream.use { it.write(body.toString().toByteArray()) }
             }) { http ->
                 val page = JSONObject(http.inputStream.bufferedReader().use { it.readText() }).getJSONArray("messages")
-                val evicted = mutableListOf<JSONObject>()
                 synchronized(historyLock) {
-                    val saved = recent
                     val cursor = prefs.getLong("inboxAfter", 0)
                     var last = cursor
                     for (turn in objects(page)) {
                         val id = turn.getLong("id")
                         if (id <= last) continue
-                        saved.put(turn.put("proactive", true))
+                        history.append(turn.put("proactive", true))
+                        newest = turn
                         last = id
-                        if (saved.length() > 40) evicted += saved.remove(0) as JSONObject
                     }
                     if (last > cursor) {
-                        check(prefs.edit().putLong("inboxAfter", last).putString("recent", saved.toString()).commit())
-                        newest = saved.getJSONObject(saved.length() - 1)
+                        check(prefs.edit().putLong("inboxAfter", last).commit())
                     }
-                }
-                if (newest != null) for (turn in evicted) for (file in turnFiles(turn)) {
-                    ImagePreviews.discard(context, file.getString("id"))
-                    releaseFile(file)
                 }
             }
         }.exceptionOrNull()
@@ -386,19 +378,13 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                     }
                     if (stickerId.matches(STICKER_ID)) turn.put("stickerId",stickerId)
                     replies?.let { turn.put("replyFiles", it) }
-                    val evicted = synchronized(historyLock) {
-                        val saved = recent.put(turn)
-                        val oldest = if (saved.length() > 40) saved.remove(0) as? JSONObject else null
+                    synchronized(historyLock) {
                         if (closed || pendingId != id) throw IOException("发送任务已暂停")
-                        check(prefs.edit().putString("recent", saved.toString()).remove("pendingText")
+                        history.append(turn)
+                        check(prefs.edit().remove("pendingText")
                             .remove("sending").remove("pendingId").remove("pendingDraft").remove("pendingSeparate").remove("pendingFiles").commit()) { "无法保存回复，请重试" }
-                        oldest
                     }
                     savedReply = turn
-                    if (evicted != null) for (file in turnFiles(evicted)) {
-                        ImagePreviews.discard(context, file.getString("id"))
-                        releaseFile(file)
-                    }
                 }
             }
         }.exceptionOrNull()

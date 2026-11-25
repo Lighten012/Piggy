@@ -87,13 +87,9 @@ class ChatSendService : JobService() {
 
     // A stop can race the local commit before its main-thread completion callback.
     private fun finishIfSaved(client: PiggyClient, id: String) {
-        val history = client.recent
-        for (index in history.length() - 1 downTo 0) {
-            val turn = history.getJSONObject(index)
-            if (turn.optString("request") != id) continue
+        client.history.byRequest(id)?.let { turn ->
             ReplyNotifications.onReplySaved(this, turn)
             listener?.finished(null, false)
-            return
         }
     }
 

@@ -68,8 +68,4 @@ internal object ImagePreviews {
             glide.clear(target)
         }
     }
-
-    fun discard(context: Context, id: String?) {
-        if (!id.isNullOrEmpty()) AtomicFile(path(context,id)).delete()
-    }
 }
