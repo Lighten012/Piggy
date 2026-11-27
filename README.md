@@ -92,6 +92,8 @@ Go 将匿名、带版本号的 `POST /mobile/attachments` 流式转给 Pi。Pi �
 | PIGGY_COMPANION_NAME | 可选。在本环境私有配置中填写 Piggy 所代表的人的名字，重启 Pi 服务后生效 |
 | PI_MODEL | 首次使用的模型，默认 gpt-6.2-sol；网页已保存的设置优先 |
 | PIGGY_ADMIN_PASSWORD | 网页账号 piggy 的独立密码 |
+| QWEATHER_API_HOST | 和风天气控制台分配的 API Host，用于解析地区、查询预报及预警 |
+| QWEATHER_API_KEY | 和风天气项目的 API Key，保存在服务端环境配置中 |
 | PIGGY_WORKER_TOKEN | Go 与 Pi 之间的随机内部密钥 |
 
 安装并启动发布目录中的 piggy-pi 和 piggy-admin 两个 systemd 单元。按 `server/admin/nginx.conf.example` 配置本站证书和 HTTPS 8888。Go 不接收模型密钥，Pi 不接收网页密码。

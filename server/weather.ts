@@ -32,89 +32,103 @@ export class WeatherLocations {
   }
 }
 
-const source="晴天钟（7Timer!）";
-const credit="https://www.7timer.info/doc.php?lang=zh-CN";
-const skies:Record<string,string>={clear:"晴",pcloudy:"少云",mcloudy:"多云",cloudy:"阴",humid:"潮湿或有雾",lightrain:"小雨",oshower:"局部阵雨",ishower:"零星阵雨",lightsnow:"小雪",rain:"雨",snow:"雪",rainsnow:"雨雪混合",ts:"雷暴",tsrain:"雷雨"};
-const windScale=["无风","1–2级","3–4级","5级","6–7级","8–9级","10–11级","12级以上"];
-const rainRates=["无","低于0.25","0.25–1","1–4","4–10","10–16","16–30","30–50","50–75","超过75"];
+type Coordinates={lat:number;lon:number};
+type View="daily"|"hourly"|"warnings";
+const viewParameter={type:"string",enum:["daily","hourly","warnings"],description:"整日概况用 daily（默认），具体时段和降水用 hourly，气象部门的有效预警用 warnings。"} as const;
 
 function beijingTime(ms:number) {
   return new Date(ms+8*hour).toISOString().slice(0,19)+"+08:00";
 }
-function readForecast(raw:any,now:number) {
-  const stamp=/^(\d{4})(\d{2})(\d{2})(\d{2})$/.exec(raw?.init);
-  const issued=stamp?Date.parse(stamp[1]+"-"+stamp[2]+"-"+stamp[3]+"T"+stamp[4]+":00:00Z"):NaN;
-  if (raw?.product!=="civil" || !Array.isArray(raw.dataseries) || !Number.isFinite(issued) || issued>now || now-issued>day)
-    throw new Error("天气预报未更新");
-  const periods=[];
-  for (const row of raw.dataseries) {
-    const temp=row?.temp2m, wind=row?.wind10m?.speed, rain=row?.prec_amount;
-    const sky=skies[String(row?.weather).replace(/(day|night)$/,"")];
-    if (!Number.isInteger(row?.timepoint) || row.timepoint<0 || row.timepoint>192 || !sky || !Number.isFinite(temp) || temp< -76 || temp>60 ||
-        !Number.isInteger(wind) || wind<1 || wind>8 || !Number.isInteger(rain) || rain<0 || rain>9) continue;
-    const time=beijingTime(issued+row.timepoint*hour);
-    const alerts:string[]=[];
-    if (sky==="雷暴" || sky==="雷雨") alerts.push("雷暴");
-    if (row.prec_type==="frzr") alerts.push("冻雨");
-    else if (["snow","icep"].includes(row.prec_type) || sky.includes("雪")) alerts.push("降雪或雨雪混合");
-    else if (rain>=4 && row.prec_type==="rain") alerts.push("明显降雨");
-    if (wind>=5) alerts.push("大风");
-    if (temp>=35) alerts.push("高温");
-    if (temp<=-10) alerts.push("严寒");
-    periods.push({time,temp,sky,wind:windScale[wind-1],precipitationRate:rainRates[rain],alerts});
-  }
-  return {issuedAt:beijingTime(issued),periods};
+async function request(path:string,params:Record<string,string>) {
+  const host=(process.env.QWEATHER_API_HOST??"").trim().replace(/^https:\/\//,"").replace(/\/$/,"");
+  const key=process.env.QWEATHER_API_KEY?.trim();
+  if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.qweatherapi\.com$/i.test(host) || !key)
+    throw new Error("服务端尚未配置和风天气");
+  const res=await fetch("https://"+host+path+"?"+new URLSearchParams({lang:"zh",...params}),{
+    headers:{"X-QW-Api-Key":key},redirect:"error",signal:AbortSignal.timeout(12000)});
+  if (!res.ok) throw new Error("和风天气请求失败（HTTP "+res.status+"）");
+  return res.json();
 }
-let cache:{key:string;expires:number;data:ReturnType<typeof readForecast>}|undefined;
-
-export async function forecast(place:{lat:number;lon:number}) {
-  const key=place.lat+","+place.lon, now=Date.now();
-  if (!cache || cache.key!==key || cache.expires<=now) {
-    const params=new URLSearchParams({lon:String(place.lon),lat:String(place.lat),product:"civil",output:"json",unit:"metric"});
-    const response=await fetch("https://www.7timer.info/bin/api.pl?"+params,{signal:AbortSignal.timeout(12000)});
-    if (!response.ok) throw new Error("晴天钟暂时不可用");
-    const raw=await response.json().catch(()=>{throw new Error("晴天钟未返回有效预报");});
-    const data=readForecast(raw,now);
-    if (!data.periods.length) throw new Error("天气预报数据不完整");
-    cache={key,expires:Math.min(now+hour,Date.parse(data.issuedAt)+day),data};
-  }
-  const periods=cache.data.periods.filter(p=>Date.parse(p.time)>now-3*hour && Date.parse(p.time)<=now+48*hour);
-  if (!periods.length || Date.parse(periods[0].time)>now+3*hour) throw new Error("近期天气预报暂缺");
+async function resolveArea(place:Coordinates) {
+  const raw=await request("/geo/v2/city/lookup",{location:place.lon.toFixed(2)+","+place.lat.toFixed(2),number:"1"});
+  const city=raw.location?.[0];
+  if (raw.code!=="200" || !city?.name) throw new Error("暂时无法确认天气对应的城市或区县");
+  return {area:[...new Set([city.adm2,city.name].filter(Boolean))].join(" · "),url:city.fxLink || "https://www.qweather.com/"};
+}
+async function readWeather(coords:string,view:View,now:number) {
   const today=beijingTime(now).slice(0,10);
-  const todayAlerts=[...new Set(periods.filter(p=>p.time.startsWith(today)).flatMap(p=>p.alerts))];
-  const dates=[...new Set(periods.map(p=>p.time.slice(0,10)))].filter(date=>date>=today);
-  const daily=dates.map(date=>{
-    const samples=cache.data.periods.filter(p=>p.time.startsWith(date));
-    const temps=samples.map(p=>p.temp);
-    const fullDay=new Set(samples.map(p=>p.time)).size===8;
-    return {date,minTemp:Math.min(...temps),maxTemp:Math.max(...temps),fullDay,conditions:[...new Set(samples.map(p=>p.sky))]};
-  });
-  return {source,url:credit,timezone,daily,issuedAt:cache.data.issuedAt,units:"北京时间 UTC+8，每3小时一期；温度 °C，降水强度区间 mm/h",periods,todayAlerts};
+  if (view==="daily") {
+    const data=await request("/weather/v1/daily/"+coords,{days:"3"});
+    const daily=(data.days??[]).flatMap((d:any)=>{
+      const start=Date.parse(d.forecastStartTime),minTemp=d.temperatureMin?.value,maxTemp=d.temperatureMax?.value;
+      if (!Number.isFinite(start) || !Number.isFinite(minTemp) || !Number.isFinite(maxTemp) || minTemp>maxTemp) return [];
+      const date=beijingTime(start).slice(0,10);
+      return date<today?[]:[{date,minTemp,maxTemp,daytime:d.daytime?.condition?.text,nighttime:d.nighttime?.condition?.text}];
+    });
+    if (!daily.length) throw new Error("近期逐日预报暂缺");
+    return {daily,attributions:data.metadata?.attributions??[]};
+  }
+  if (view==="hourly") {
+    const data=await request("/weather/v1/hourly/"+coords,{hours:"48"});
+    const periods=(data.hours??[]).flatMap((h:any)=>{
+      const time=Date.parse(h.forecastTime);
+      if (!Number.isFinite(time) || time<=now-hour || !Number.isFinite(h.temperature?.value) || !h.condition?.text) return [];
+      return [{time:beijingTime(time),temp:h.temperature.value,sky:h.condition.text,windMs:h.wind?.speed?.value,
+        precipMm:h.precipitation?.amount?.value,precipType:h.precipitation?.type}];
+    });
+    if (!periods.length) throw new Error("近期逐小时预报暂缺");
+    return {periods,attributions:data.metadata?.attributions??[]};
+  }
+  if (view!=="warnings") throw new Error("天气查询类型无效");
+  const data=await request("/weatheralert/v1/current/"+coords,{});
+  if (!Array.isArray(data.alerts) && data.metadata?.zeroResult!==true) throw new Error("气象预警数据暂缺");
+  const alerts=data.alerts??[];
+  const superseded=new Set(alerts.flatMap((w:any)=>w.messageType?.supersedes??[]));
+  const warnings=alerts.filter((w:any)=>!superseded.has(w.id) && ["alert","update"].includes(w.messageType?.code) && w.headline &&
+    (!w.expireTime || Date.parse(w.expireTime)>now)).map((w:any)=>({headline:w.headline,sender:w.senderName,
+      effectiveTime:w.effectiveTime,expires:w.expireTime,instruction:w.instruction}));
+  return {warnings,attributions:data.metadata?.attributions??[]};
+}
+let cache:{key:string;expires:number;data:Awaited<ReturnType<typeof readWeather>>}|undefined;
+export async function forecast(place:Coordinates,view:View="daily") {
+  const coords=place.lat.toFixed(2)+"/"+place.lon.toFixed(2);
+  const key=coords+"/"+view,now=Date.now();
+  const cached=cache?.key===key && cache.expires>now ? cache.data:undefined;
+  const [area,data]=await Promise.all([resolveArea(place),cached??readWeather(coords,view,now)]);
+  // 只缓存天气值，行政区按本次坐标重新解析。跨整点后重查。
+  if (!cached && view!=="warnings") cache={key,expires:(Math.floor(now/hour)+1)*hour,data};
+  return {source:"和风天气",timezone,...area,...data};
 }
 
-export const locationDeclaration={name:"get_recent_location",description:"按需查询手机是否有 24 小时内的授权大致定位。返回可用状态、采集时间和时区；坐标仅由当地天气工具读取。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
+export const locationDeclaration={name:"get_recent_location",description:"查询手机近期授权的大致位置，返回已核实的城市或区县、采集时间和时区。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
 export function locationTool(store:WeatherLocations,session:string):AgentTool {
   return {...locationDeclaration,label:"查询近期定位",async execute(){
     const place=store.latest(session);
-    const result=place?{available:true,observedAt:beijingTime(place.observed),timezone}:{available:false};
+    let result:Record<string,unknown>={available:false};
+    if (place) {
+      const area=await resolveArea(place);
+      const latest=store.latest(session);
+      if (latest?.lat===place.lat && latest.lon===place.lon)
+        result={available:true,area:area.area,observedAt:beijingTime(latest.observed),timezone};
+    }
     return {content:[{type:"text",text:JSON.stringify(result)}],details:{}};
   }};
 }
 
-export const cityWeatherDeclaration={name:"get_city_weather",description:"查询用户指定城市的每日气温范围和三小时预报。使用已核实的公开城市中心坐标。",parameters:{type:"object",properties:{lat:{type:"number",minimum:-90,maximum:90},lon:{type:"number",minimum:-180,maximum:180}},required:["lat","lon"],additionalProperties:false}} as const;
+export const cityWeatherDeclaration={name:"get_city_weather",description:"查询用户指定城市的和风天气，使用已核实的公开城市中心坐标。",parameters:{type:"object",properties:{lat:{type:"number",minimum:-90,maximum:90},lon:{type:"number",minimum:-180,maximum:180},view:viewParameter},required:["lat","lon"],additionalProperties:false}} as const;
 export const cityWeatherTool:AgentTool={...cityWeatherDeclaration,label:"查询指定城市天气",async execute(_id,center){
   if (!Number.isFinite(center.lat) || Math.abs(center.lat)>90 || !Number.isFinite(center.lon) || Math.abs(center.lon)>180 || (center.lat===0 && center.lon===0))
     throw new Error("请先核实城市中心坐标");
-  return {content:[{type:"text",text:JSON.stringify(await forecast({lat:center.lat,lon:center.lon}))}],details:{}};
+  return {content:[{type:"text",text:JSON.stringify(await forecast(center,center.view))}],details:{}};
 }};
 
-export const weatherDeclaration={name:"get_local_weather",description:"按手机近期授权定位查询北京时间未来约两天的每日气温范围和三小时预报。无需提供坐标。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
+export const weatherDeclaration={name:"get_local_weather",description:"按手机近期授权定位查询和风天气及对应地区。",parameters:{type:"object",properties:{view:viewParameter},additionalProperties:false}} as const;
 export function weatherTool(store:WeatherLocations,session:string):AgentTool {
-  return {...weatherDeclaration,label:"查询当地天气",async execute(){
+  return {...weatherDeclaration,label:"查询当地天气",async execute(_id,args){
     const place=store.latest(session);
     let result;
     if (place) {
-      const weather=await forecast(place);
+      const weather=await forecast(place,args.view);
       const latest=store.latest(session);
       if (latest?.lat===place.lat && latest.lon===place.lon) result=weather;
     }

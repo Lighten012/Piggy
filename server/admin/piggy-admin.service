@@ -8,7 +8,7 @@ DynamicUser=yes
 WorkingDirectory=/lighten012/projects/Piggy/current
 ExecStart=/lighten012/projects/Piggy/current/piggy-admin
 EnvironmentFile=/lighten012/projects/Piggy/server.env
-UnsetEnvironment=PI_API_KEY
+UnsetEnvironment=PI_API_KEY QWEATHER_API_KEY
 Environment=GOMEMLIMIT=64MiB
 MemoryAccounting=yes
 MemoryHigh=80M
