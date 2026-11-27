@@ -19,15 +19,17 @@ export class WeatherLocations {
     if (typeof fix?.zone==="string" && fix.zone.length<=80) {
       try {zone=new Intl.DateTimeFormat("en",{timeZone:fix.zone}).resolvedOptions().timeZone;} catch {}
     }
-    this.db.prepare(`INSERT INTO weather_location VALUES(?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET
+    const update=this.db.prepare(`INSERT INTO weather_location VALUES(?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET
       revision=excluded.revision,lat=excluded.lat,lon=excluded.lon,observed=excluded.observed,zone=excluded.zone
       WHERE excluded.revision>weather_location.revision`).run(session,value.revision,
         usable?Math.round(fix.lat*10)/10:null,usable?Math.round(fix.lon*10)/10:null,usable?fix.observed:null,usable?zone:null);
+    if (update.changes && !usable) cache=undefined;
   }
   latest(session:string, now=Date.now()) {
     return this.db.prepare("SELECT lat,lon,observed,zone FROM weather_location WHERE session=? AND observed>?").get(session,now-day) as Place|undefined;
   }
   expire(now:number) {
+    if (cache && cache.expires<=now) cache=undefined;
     this.db.prepare("UPDATE weather_location SET lat=NULL,lon=NULL,observed=NULL,zone=NULL WHERE observed<=?").run(now-day);
   }
 }
