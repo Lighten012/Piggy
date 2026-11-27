@@ -48,3 +48,17 @@ test("7Timer civil uses Beijing midnight, preserves categories and rejects stale
   payload.init="2026112200";
   await assert.rejects(forecast({lat:32,lon:121}),/未更新/);
 });
+
+test("daily ranges use Beijing dates and distinguish incomplete days",async t=>{
+  const now=Date.parse("2026-11-27T13:30:00Z");
+  t.mock.method(Date,"now",()=>now);
+  const temps=[-5,14,18,19,16,8,7,10,13,20,23,17,4,2];
+  const dataseries=temps.map((temp2m,i)=>({timepoint:(i+1)*3,temp2m,wind10m:{speed:2},prec_type:"none",prec_amount:0,weather:"clearday"}));
+  t.mock.method(globalThis,"fetch",async()=>Response.json({product:"civil",init:"2026112700",dataseries}));
+  const result=await forecast({lat:31.2,lon:121.5});
+  assert.deepEqual(result.daily,[
+    {date:"2026-11-27",minTemp:-5,maxTemp:19,fullDay:false,conditions:["晴"]},
+    {date:"2026-11-28",minTemp:4,maxTemp:23,fullDay:true,conditions:["晴"]},
+    {date:"2026-11-29",minTemp:2,maxTemp:2,fullDay:false,conditions:["晴"]}
+  ]);
+});

@@ -82,7 +82,14 @@ export async function forecast(place:{lat:number;lon:number}) {
   if (!periods.length || Date.parse(periods[0].time)>now+3*hour) throw new Error("近期天气预报暂缺");
   const today=beijingTime(now).slice(0,10);
   const todayAlerts=[...new Set(periods.filter(p=>p.time.startsWith(today)).flatMap(p=>p.alerts))];
-  return {source,url:credit,timezone,issuedAt:cache.data.issuedAt,units:"北京时间 UTC+8，每3小时一期；温度 °C，降水强度区间 mm/h",periods,todayAlerts};
+  const dates=[...new Set(periods.map(p=>p.time.slice(0,10)))].filter(date=>date>=today);
+  const daily=dates.map(date=>{
+    const samples=cache.data.periods.filter(p=>p.time.startsWith(date));
+    const temps=samples.map(p=>p.temp);
+    const fullDay=new Set(samples.map(p=>p.time)).size===8;
+    return {date,minTemp:Math.min(...temps),maxTemp:Math.max(...temps),fullDay,conditions:[...new Set(samples.map(p=>p.sky))]};
+  });
+  return {source,url:credit,timezone,daily,issuedAt:cache.data.issuedAt,units:"北京时间 UTC+8，每3小时一期；温度 °C，降水强度区间 mm/h",periods,todayAlerts};
 }
 
 export const locationDeclaration={name:"get_recent_location",description:"按需查询手机是否有 24 小时内的授权大致定位。返回可用状态、采集时间和时区；坐标仅由当地天气工具读取。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
@@ -94,14 +101,14 @@ export function locationTool(store:WeatherLocations,session:string):AgentTool {
   }};
 }
 
-export const cityWeatherDeclaration={name:"get_city_weather",description:"查询用户明确指定城市的三小时预报。使用已核实的公开城市中心坐标。",parameters:{type:"object",properties:{lat:{type:"number",minimum:-90,maximum:90},lon:{type:"number",minimum:-180,maximum:180}},required:["lat","lon"],additionalProperties:false}} as const;
+export const cityWeatherDeclaration={name:"get_city_weather",description:"查询用户指定城市的每日气温范围和三小时预报。使用已核实的公开城市中心坐标。",parameters:{type:"object",properties:{lat:{type:"number",minimum:-90,maximum:90},lon:{type:"number",minimum:-180,maximum:180}},required:["lat","lon"],additionalProperties:false}} as const;
 export const cityWeatherTool:AgentTool={...cityWeatherDeclaration,label:"查询指定城市天气",async execute(_id,center){
   if (!Number.isFinite(center.lat) || Math.abs(center.lat)>90 || !Number.isFinite(center.lon) || Math.abs(center.lon)>180 || (center.lat===0 && center.lon===0))
     throw new Error("请先核实城市中心坐标");
   return {content:[{type:"text",text:JSON.stringify(await forecast({lat:center.lat,lon:center.lon}))}],details:{}};
 }};
 
-export const weatherDeclaration={name:"get_local_weather",description:"按手机近期授权定位查询北京时间未来约两天的三小时预报。无需提供坐标。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
+export const weatherDeclaration={name:"get_local_weather",description:"按手机近期授权定位查询北京时间未来约两天的每日气温范围和三小时预报。无需提供坐标。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
 export function weatherTool(store:WeatherLocations,session:string):AgentTool {
   return {...weatherDeclaration,label:"查询当地天气",async execute(){
     const place=store.latest(session);
