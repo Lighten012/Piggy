@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { locationTool, WeatherLocations, forecast, weatherTool } from "./weather.ts";
+import { locationTool, WeatherLocations, forecast, cityWeatherTool } from "./weather.ts";
 
 test("the location tool reads only a recent authorized fix and keeps coordinates private",async()=>{
   const now=Date.now(),session=randomUUID(),db=new DatabaseSync(":memory:");
@@ -40,11 +40,9 @@ test("7Timer civil uses Beijing midnight, preserves categories and rejects stale
   assert.deepEqual(result.todayAlerts,[]);
   assert.deepEqual(result.periods[2].alerts,["雷暴","明显降雨","大风","高温"]);
   assert.equal(result.periods[2].wind,"6–7级");
-  const db=new DatabaseSync(":memory:");
-  const store=new WeatherLocations(db);
-  const city=await weatherTool(store,"unbound").execute("test",{cityCenter:{lat:30.3,lon:120.2}});
+  const city=await cityWeatherTool.execute("test",{lat:30.3,lon:120.2});
   assert.match(city.content[0].text,/晴天钟/);
-  db.close();
+  await assert.rejects(cityWeatherTool.execute("test",{lat:0,lon:0}),/核实城市/);
   payload.dataseries[1]={...base,timepoint:15,weather:"rainsnownight",prec_type:"frzr",temp2m:-11};
   assert.deepEqual((await forecast({lat:40,lon:116})).todayAlerts,["冻雨","严寒"]);
   payload.init="2026112200";

@@ -73,7 +73,8 @@ export async function forecast(place:{lat:number;lon:number}) {
     const params=new URLSearchParams({lon:String(place.lon),lat:String(place.lat),product:"civil",output:"json",unit:"metric"});
     const response=await fetch("https://www.7timer.info/bin/api.pl?"+params,{signal:AbortSignal.timeout(12000)});
     if (!response.ok) throw new Error("晴天钟暂时不可用");
-    const data=readForecast(await response.json(),now);
+    const raw=await response.json().catch(()=>{throw new Error("晴天钟未返回有效预报");});
+    const data=readForecast(raw,now);
     if (!data.periods.length) throw new Error("天气预报数据不完整");
     cache={key,expires:Math.min(now+hour,Date.parse(data.issuedAt)+day),data};
   }
@@ -93,17 +94,21 @@ export function locationTool(store:WeatherLocations,session:string):AgentTool {
   }};
 }
 
-export const weatherDeclaration={name:"get_local_weather",description:"按北京时间查询未来约两天的晴天钟三小时预报。当地天气用手机近期定位。用户点名其他城市时可传已核实的城市中心经纬度。",parameters:{type:"object",properties:{cityCenter:{type:"object",description:"仅当用户明确指定城市时填写其公开中心坐标。",properties:{lat:{type:"number",minimum:-90,maximum:90},lon:{type:"number",minimum:-180,maximum:180}},required:["lat","lon"],additionalProperties:false}},additionalProperties:false}} as const;
+export const cityWeatherDeclaration={name:"get_city_weather",description:"查询用户明确指定城市的三小时预报。使用已核实的公开城市中心坐标。",parameters:{type:"object",properties:{lat:{type:"number",minimum:-90,maximum:90},lon:{type:"number",minimum:-180,maximum:180}},required:["lat","lon"],additionalProperties:false}} as const;
+export const cityWeatherTool:AgentTool={...cityWeatherDeclaration,label:"查询指定城市天气",async execute(_id,center){
+  if (!Number.isFinite(center.lat) || Math.abs(center.lat)>90 || !Number.isFinite(center.lon) || Math.abs(center.lon)>180 || (center.lat===0 && center.lon===0))
+    throw new Error("请先核实城市中心坐标");
+  return {content:[{type:"text",text:JSON.stringify(await forecast({lat:center.lat,lon:center.lon}))}],details:{}};
+}};
+
+export const weatherDeclaration={name:"get_local_weather",description:"按手机近期授权定位查询北京时间未来约两天的三小时预报。无需提供坐标。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
 export function weatherTool(store:WeatherLocations,session:string):AgentTool {
-  return {...weatherDeclaration,label:"查询当地天气",async execute(_id,args){
-    const center=args.cityCenter;
-    if (center!=null && (!Number.isFinite(center.lat) || Math.abs(center.lat)>90 || !Number.isFinite(center.lon) || Math.abs(center.lon)>180))
-      throw new Error("城市中心坐标无效");
-    const place=center??store.latest(session);
+  return {...weatherDeclaration,label:"查询当地天气",async execute(){
+    const place=store.latest(session);
     let result;
     if (place) {
       const weather=await forecast(place);
-      const latest=center??store.latest(session);
+      const latest=store.latest(session);
       if (latest?.lat===place.lat && latest.lon===place.lon) result=weather;
     }
     return {content:[{type:"text",text:JSON.stringify(result??{unavailable:"没有近期有效定位。"})}],details:{}};

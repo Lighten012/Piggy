@@ -9,7 +9,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { AttachmentError, prepareStoredImage, restoreOutputReference, receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import { ReplyFiles } from "./reply-files.ts";
-import { locationTool, weatherTool } from "./weather.ts";
+import { cityWeatherTool, locationTool, weatherTool } from "./weather.ts";
 import { responseTools } from "./hosted-tools.ts";
 import { WebSearch } from "./web-search.ts";
 import { Retention } from "./retention.ts";
@@ -262,11 +262,11 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     const turns = journal.contextTurns(conversation);
     let stickerId:string|undefined, stickerOnly=false;
     let skipDelivery=false;
-    const toolsForTurn = [locationTool(journal.weather,conversation), weatherTool(journal.weather,conversation), stickerTool(journal.stickers,(id,only)=>{stickerId=id;stickerOnly=only;}), memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id,file=>restoreOutputReference(retention,file,baseUrl,apiKey!)), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone),id)];
+    const toolsForTurn = [cityWeatherTool, locationTool(journal.weather,conversation), weatherTool(journal.weather,conversation), stickerTool(journal.stickers,(id,only)=>{stickerId=id;stickerOnly=only;}), memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id,file=>restoreOutputReference(retention,file,baseUrl,apiKey!)), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone),id)];
     const runningTools=new Map<string,unknown>();
     const toolFailures:{name:string;args:unknown;content:unknown}[]=[];
     let stopTools=false;
-    const permittedTools = proactive ? toolsForTurn.filter(tool=>["get_recent_location","get_local_weather","search_memory","search_chat_history","read_chat_context","send_sticker","read_cycle_calendar"].includes(tool.name)) : toolsForTurn;
+    const permittedTools = proactive ? toolsForTurn.filter(tool=>["get_city_weather","get_recent_location","get_local_weather","search_memory","search_chat_history","read_chat_context","send_sticker","read_cycle_calendar"].includes(tool.name)) : toolsForTurn;
     if (proactive) permittedTools.push({...skipDeclaration,label:"跳过本次提醒",async execute(){
       skipDelivery=true;
       return {content:[{type:"text",text:"本次不发送消息。"}],details:{}};
