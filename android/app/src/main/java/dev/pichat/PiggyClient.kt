@@ -247,6 +247,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
         val failure = runCatching {
             val after = prefs.getLong("inboxAfter", 0)
             val body = JSONObject().put("session", session).put("after", after)
+            WeatherLocation.snapshot(context)?.let { body.put("weather", it) }
             post(PiggyServer.url("/mobile/inbox"), { http ->
                 http.setRequestProperty("Content-Type", "application/json")
                 http.outputStream.use { it.write(body.toString().toByteArray()) }
@@ -338,6 +339,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
             retryNetwork(status) {
                 post(endpoint, { http ->
                     http.setRequestProperty("Content-Type","application/json")
+                    WeatherLocation.snapshot(context)?.let { data.put("weather", it) }
                     http.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
                 }) { http ->
                     var repliedAt = 0L

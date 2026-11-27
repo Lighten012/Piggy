@@ -3,7 +3,7 @@ import { onMounted,onUnmounted,ref } from "vue";
 const data=ref({connected:false,tasks:[],runs:[]}), error=ref(""), saving=ref(false), edit=ref(null);
 const fresh=()=>({name:"",cron:"0 8 * * *",prompt:"",enabled:true});
 const form=ref(fresh()), custom=ref(false), clock=ref("08:00");
-const statuses={missed:"停机期间错过",queued:"等待生成",generated:"已生成",failed:"失败"};
+const statuses={skipped:"无需提醒",missed:"停机期间错过",queued:"等待生成",generated:"已生成",failed:"失败"};
 const date=value=>new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(value);
 async function api(path,method="GET",body) {
   const r=await fetch(path,{method,cache:"no-store",headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined});

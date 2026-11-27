@@ -30,6 +30,7 @@ import io.noties.markwon.ext.tables.TableAwareMovementMethod
 import io.noties.markwon.ext.tables.TableRowSpan
 
 class ChatActivity : Activity() {
+    private val weatherLocation by lazy { WeatherLocation(this) }
     private val attachmentActions by lazy { AttachmentActions(this, client) }
     private val markdown by lazy { chatMarkdown(this) }
     private lateinit var menu: ImageButton
@@ -850,6 +851,7 @@ class ChatActivity : Activity() {
             addAction(Intent.ACTION_TIMEZONE_CHANGED)
         })
         refreshClock()
+        weatherLocation.start()
         chatVisible = true
         ReplyNotifications.chatStarted(this)
         if (versionCurrent) refreshPhrases.run()
@@ -858,6 +860,7 @@ class ChatActivity : Activity() {
     }
     override fun onStop() {
         unregisterReceiver(timeChanged)
+        weatherLocation.stop()
         chatVisible = false
         ReplyNotifications.chatStopped()
         chat.removeCallbacks(refreshPhrases)

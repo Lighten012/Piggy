@@ -9,6 +9,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { AttachmentError, prepareStoredImage, restoreOutputReference, receiveAttachment, uuid } from "./attachments.ts";
 import { streamSimple as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import { ReplyFiles } from "./reply-files.ts";
+import { forecast, weatherReminder, weatherTool } from "./weather.ts";
 import { responseTools } from "./hosted-tools.ts";
 import { WebSearch } from "./web-search.ts";
 import { Retention } from "./retention.ts";
@@ -210,6 +211,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
   const conversation = data.session ?? randomUUID();
   const request = data.request ?? randomUUID();
   const question = data.text.trim();
+  if (!proactive) journal.schedules.weather.sync(conversation,data.weather);
   const existing = journal.lookup(conversation,request);
   if (existing) {
     if (existing.question !== (proactive ? "" : question) || JSON.stringify(journal.turnFiles(Number(existing.id)).map(f=>f.id)) !== JSON.stringify(ids)) return reject(res,409,"消息编号已占用");
@@ -259,7 +261,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     }
     const turns = journal.contextTurns(conversation);
     let stickerId:string|undefined, stickerOnly=false;
-    const toolsForTurn = [stickerTool(journal.stickers,(id,only)=>{stickerId=id;stickerOnly=only;}), memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id,file=>restoreOutputReference(retention,file,baseUrl,apiKey!)), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone),id)];
+    const toolsForTurn = [weatherTool(journal.schedules.weather,conversation), stickerTool(journal.stickers,(id,only)=>{stickerId=id;stickerOnly=only;}), memoryTool(journal,memoryIndex,conversation,id,question,turns.at(-1)?.messages ?? [],model,apiKey), ...memoryReadTools(journal,memoryIndex,conversation,id,file=>restoreOutputReference(retention,file,baseUrl,apiKey!)), ...cycleTools(journal.cycles,conversation,question,localToday(data.timeZone),id)];
     const runningTools=new Map<string,unknown>();
     const toolFailures:{name:string;args:unknown;content:unknown}[]=[];
     let stopTools=false;
@@ -495,8 +497,9 @@ server.listen(Number(process.env.PORT || 18889), host, () => {
 function startSchedules(port:number) {
   const store=journal.schedules, db=store.db;
   let working=false;
+  let weatherRetryAt=0, cleanupAt=0;
   async function generate() {
-    const run=db.prepare("SELECT * FROM scheduled_runs WHERE status='queued' AND session=(SELECT session FROM mobile_installation WHERE id=1) ORDER BY due LIMIT 1").get();
+    const run=db.prepare("SELECT * FROM scheduled_runs WHERE status='queued' AND session=(SELECT session FROM mobile_installation WHERE id=1) AND (task<>'local-weather' OR ?>=?) ORDER BY due LIMIT 1").get(Date.now(),weatherRetryAt);
     if(!run) return;
     const existing=journal.lookup(String(run.session),String(run.request));
     if(!existing && Date.now()-Number(run.due)>600000) {
@@ -504,9 +507,26 @@ function startSchedules(port:number) {
       return;
     }
     if(!existing && !busy) {
+      let prompt=run.prompt;
+      if(run.task==="local-weather") {
+        const session=String(run.session), place=store.weather.latest(session);
+        const skip=()=>db.prepare("UPDATE scheduled_runs SET status='skipped' WHERE request=?").run(run.request);
+        if(!place) {skip();return;}
+        try {
+          const weather=await forecast(place);
+          const reminder=weatherReminder(weather.hours,place.zone);
+          const latest=store.weather.latest(session);
+          if(!latest || !reminder) {skip();return;}
+          if(latest.lat!==place.lat || latest.lon!==place.lon) return;
+          prompt=reminder;
+        } catch {
+          weatherRetryAt=Date.now()+60_000;
+          return;
+        }
+      }
       const response=await fetch(`http://127.0.0.1:${port}/chat`, {method:"POST",
         headers:{"Content-Type":"application/json","Authorization":"Bearer "+workerToken,"X-Piggy-Owner":"scheduler"},
-        body:JSON.stringify({session:run.session,request:run.request,text:run.prompt}),signal:AbortSignal.timeout(375000)});
+        body:JSON.stringify({session:run.session,request:run.request,text:prompt}),signal:AbortSignal.timeout(375000)});
       if(response.status===409 || response.status===503) {
         await response.body?.cancel();
         if(Date.now()-Number(run.due)>600000) db.prepare("UPDATE scheduled_runs SET status='failed' WHERE request=?").run(run.request);
@@ -519,7 +539,10 @@ function startSchedules(port:number) {
     db.prepare("UPDATE scheduled_runs SET status=? WHERE request=?").run(turn?.status==="complete"?"generated":"failed",run.request);
   }
   setInterval(()=>{
-    try {store.enqueue(Date.now());} catch {console.warn("Schedule queue unavailable");}
+    try {
+      if(Date.now()>=cleanupAt) {store.weather.expire(Date.now());cleanupAt=Date.now()+60_000;}
+      store.enqueue(Date.now());
+    } catch {console.warn("Schedule queue unavailable");}
     if(!working) {working=true;void generate().catch(()=>console.warn("Scheduled generation interrupted")).finally(()=>{working=false;});}
   },2000).unref();
 }
