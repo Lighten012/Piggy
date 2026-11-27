@@ -1,9 +1,12 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 
+import Schedules from "./Schedules.vue";
 import Stickers from "./Stickers.vue";
 import { renderSkillMarkdown } from "./markdown.js";
 
+const props = defineProps({page:String,title:String});
+const usesCatalog = computed(() => !["schedules","stickers"].includes(props.page));
 const catalog = ref(null);
 const loading = ref(false);
 const error = ref("");
@@ -82,17 +85,18 @@ async function reload() {
     loading.value = false;
   }
 }
-onMounted(reload);
+watch(() => props.page, () => { if (usesCatalog.value && !catalog.value) reload(); }, {immediate:true});
 onUnmounted(() => controller.abort());
 </script>
 <template>
-  <main class="catalog">
-    <div class="heading"><h1>Agent 能力</h1><button type="button" class="reload" :disabled="loading || saving || savingPhrases || phrasesChanged || dirty" @click="reload">刷新</button></div>
-    <p v-if="error" role="alert" class="alert">{{ error }}</p>
-    <p v-if="loading" role="status">正在读取能力清单…</p>
+  <Schedules v-if="page==='schedules'" />
+  <main v-else class="catalog" :key="page">
+    <div class="heading"><h1>{{ title }} <small v-if="catalog && (page==='skills' || page==='tools')">{{ catalog[page].length }}</small></h1><button v-if="usesCatalog" type="button" class="reload" :disabled="loading || saving || savingPhrases || phrasesChanged || dirty" @click="reload">刷新</button></div>
+    <Stickers v-if="page==='stickers'" />
+    <p v-if="usesCatalog && error" role="alert" class="alert">{{ error }}</p>
+    <p v-if="usesCatalog && loading" role="status">正在读取能力清单…</p>
     <template v-if="catalog">
-      <section aria-labelledby="model-title">
-        <h2 id="model-title">手机模式</h2>
+      <section v-if="page==='models'" :aria-label="title">
 
         <form v-for="{id, name} in modes" :key="id" @submit.prevent="save(id)" @change="feedback[id] = ''">
           <h3>{{ name }}</h3>
@@ -115,8 +119,7 @@ onUnmounted(() => controller.abort());
         </form>
         <p id="speed-note" class="empty-note">快速和极速由 OpenAI 按更高费率计费，实际可用性取决于账号额度。</p>
       </section>
-      <section aria-labelledby="phrases-title">
-        <h2 id="phrases-title">回复等待短句</h2>
+      <section v-if="page==='phrases'" :aria-label="title">
         <form @submit.prevent="savePhrases">
           <label for="phrases" class="phrase-label">每行一句，按顺序轮播</label>
           <textarea id="phrases" v-model="phrases" rows="4" :disabled="savingPhrases || loading" @input="phraseFeedback = ''"></textarea>
@@ -126,17 +129,14 @@ onUnmounted(() => controller.abort());
           </div>
         </form>
       </section>
-      <Stickers />
-      <section aria-labelledby="skills-title">
-        <h2 id="skills-title">Skills <span>{{ catalog.skills.length }}</span></h2>
+      <section v-if="page==='skills'" :aria-label="title">
         <p v-if="!catalog.skills.length" class="empty-note">当前服务端未加载任何技能。</p>
         <details v-for="skill in catalog.skills" :key="skill.name">
           <summary><strong>{{ skill.name }}</strong><small>{{ skill.description }}</small></summary>
           <div class="markdown skill-body" v-html="renderSkillMarkdown(skill.instructions)"></div>
         </details>
       </section>
-      <section aria-labelledby="tools-title">
-        <h2 id="tools-title">Tools <span>{{ catalog.tools.length }}</span></h2>
+      <section v-if="page==='tools'" :aria-label="title">
         <p v-if="!catalog.tools.length" class="empty-note">当前 Agent 未注册可调用的工具。</p>
         <details v-for="tool in catalog.tools" :key="tool.name">
           <summary><strong>{{ tool.name }}</strong><small>{{ tool.description }}</small></summary>
@@ -150,6 +150,7 @@ onUnmounted(() => controller.abort());
 <style scoped>
 .catalog {overflow:auto;padding-bottom:32px}
 .heading {display:flex;align-items:center;justify-content:space-between;gap:16px}
+h1 small {display:inline;margin:0;font-size:1rem}
 .reload {font:inherit;font-size:.9rem;color:var(--berry);background:transparent;border:1px solid #d8c3c8;border-radius:22px;padding:6px 18px;min-height:40px;cursor:pointer}
 h3 {margin:20px 0 0;font-size:1rem}
 fieldset {display:grid;grid-template-columns:1.45fr 1fr 1.15fr;gap:14px;border:0;margin:18px 0 0;padding:0;min-width:0}
@@ -165,8 +166,6 @@ textarea {box-sizing:border-box;width:100%;resize:vertical;border:1px solid #d8c
 @media(max-width:640px){fieldset {grid-template-columns:1fr}}
 .reload:disabled {opacity:.6}
 section {margin-top:16px;padding:20px 24px;background:#fffdfc;border:1px solid var(--line);border-radius:18px}
-h2 {display:flex;align-items:center;gap:10px;margin:0;font-size:1.15rem}
-h2 span {font-size:.85rem;font-weight:500;padding:0 9px;border-radius:12px;color:var(--berry);background:#f4e9ec}
 .empty-note,small {color:var(--muted)}
 .empty-note {margin:8px 0 0}
 details {margin-top:12px;border-top:1px solid var(--line);overflow-wrap:anywhere}

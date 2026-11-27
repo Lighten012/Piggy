@@ -1,18 +1,27 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 
-import Schedules from "./Schedules.vue";
 import Capabilities from "./Capabilities.vue";
 import MarkdownMessage from "./MarkdownMessage.vue";
 import piggyMark from "../../../../android/app/src/main/res/drawable-nodpi/piggy_portrait.webp?no-inline";
 
 const appName = import.meta.env.VITE_PIGGY_ENVIRONMENT === "staging" ? "Piggy 测试版" : "Piggy";
-document.title = appName + " · 管理端";
 
-function currentView() { return location.hash === "#schedules" ? "schedules" : location.hash === "#capabilities" ? "capabilities" : "history"; }
+const pages = {models:"模型配置", skills:"Skills", tools:"Tools", phrases:"等待短句", stickers:"表情库", schedules:"定时任务"};
+function currentView() {
+  const hash = location.hash;
+  if (hash === "#schedules") return "schedules";
+  if (hash === "#capabilities") return "models";
+  const page = hash.split("/")[1];
+  if (hash.startsWith("#capabilities/") && Object.hasOwn(pages,page)) return page;
+  return "history";
+}
 const view = ref(currentView());
+function setTitle() { document.title = (pages[view.value] ?? "对话记录") + " · " + appName; }
+setTitle();
 async function navigate() {
   view.value = currentView();
+  setTitle();
   await nextTick();
   if (view.value === "history") refresh();
 }
@@ -82,12 +91,15 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
     <div class="brand"><img class="piggy-avatar" :src="piggyMark" alt="" width="44" height="44"><span>{{ appName }}</span></div>
     <nav aria-label="管理端导航">
       <a href="#history" :aria-current="view === 'history' ? 'page' : undefined">对话记录</a>
-      <a href="#capabilities" :aria-current="view === 'capabilities' ? 'page' : undefined">Agent 能力</a>
-      <a href="#schedules" :aria-current="view === 'schedules' ? 'page' : undefined">定时任务</a>
+      <a href="#capabilities/models" :aria-current="view !== 'history' ? 'true' : undefined">Agent 能力</a>
     </nav>
   </div></header>
-  <Schedules v-if="view === 'schedules'" />
-  <Capabilities v-if="view === 'capabilities'" />
+  <template v-if="view !== 'history'">
+    <nav class="subnav" aria-label="Agent 能力子页面">
+      <a v-for="(label,id) in pages" :key="id" :href="'#capabilities/'+id" :aria-current="view===id?'page':undefined">{{ label }}</a>
+    </nav>
+    <Capabilities :page="view" :title="pages[view]" />
+  </template>
   <main v-show="view === 'history'">
     <div class="heading"><h1>手机对话记录</h1></div>
     <p v-if="error" class="alert" role="status">{{ error }}</p>
@@ -132,9 +144,11 @@ onUnmounted(() => {window.removeEventListener("hashchange", navigate); clearInte
 <style scoped>
 nav {display:flex;gap:4px;align-items:center}
 nav a {padding:8px 12px;min-height:44px;display:inline-flex;align-items:center;border-radius:22px;text-decoration:none;color:var(--muted);font-size:.92rem}
-nav a[aria-current="page"] {color:var(--berry);background:#f2e4e7;font-weight:600}
+nav a[aria-current] {color:var(--berry);background:#f2e4e7;font-weight:600}
 nav a:focus-visible {outline:2px solid var(--berry);outline-offset:2px}
 @media(max-width:440px) { nav a {padding-inline:8px} }
+.subnav {width:min(100%,900px);margin:0 auto;padding:8px clamp(18px,5vw,48px);flex:none;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.subnav a {min-height:40px}
 .piggy-avatar { object-fit: contain; border-radius: 50%; }
 .attachment { display: grid; justify-items: end; gap: 4px; max-width: 100%; }
 .reply-file {display:grid;gap:5px;padding:10px 14px;border:1px solid var(--line);border-radius:14px;background:white;overflow-wrap:anywhere}

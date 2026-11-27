@@ -39,8 +39,7 @@ async function save(item,active) {
 }
 </script>
 <template>
-  <section aria-labelledby="stickers-title">
-    <h2 id="stickers-title">表情库</h2>
+  <section aria-label="表情库">
     <ul v-if="items.length" class="stickers">
       <li v-for="item in items" :key="item.id">
         <img :src="'/stickers/'+item.id" :alt="item.name" loading="lazy">

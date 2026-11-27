@@ -2,17 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { locationTool, WeatherLocations, todayAlerts, specialWeather } from "./weather.ts";
+import { locationTool, WeatherLocations, forecast, weatherTool } from "./weather.ts";
 
 test("the location tool reads only a recent authorized fix and keeps coordinates private",async()=>{
   const now=Date.now(),session=randomUUID(),db=new DatabaseSync(":memory:");
   const store=new WeatherLocations(db);
   const read=async()=>JSON.parse((await locationTool(store,session).execute("test",{})).content[0].text);
   assert.deepEqual(await read(),{available:false});
-  const fix={lat:30.267,lon:120.153,observed:now-3600000,zone:"Asia/Shanghai"};
+  const fix={lat:30.267,lon:120.153,observed:now-3600000,zone:"America/Los_Angeles"};
   store.sync(session,{revision:1,place:fix},now);
-  assert.deepEqual(await read(),{available:true,observedAt:new Date(fix.observed).toISOString(),timezone:fix.zone});
-  assert.deepEqual({...store.latest(session,now)},{...fix,lat:30.3,lon:120.2});
+  assert.deepEqual(await read(),{available:true,observedAt:new Date(fix.observed+8*3600000).toISOString().slice(0,19)+"+08:00",timezone:"Asia/Shanghai"});
+  assert.deepEqual({...store.latest(session,now)},{...fix,lat:30.3,lon:120.2,zone:"Asia/Shanghai"});
   store.sync(session,{revision:2,place:null},now);
   store.sync(session,{revision:1,place:fix},now);
   assert.deepEqual(await read(),{available:false});
@@ -22,14 +22,31 @@ test("the location tool reads only a recent authorized fix and keeps coordinates
   db.close();
 });
 
-test("normal days stay silent; threshold and day boundary use forecast hours for the local day",()=>{
-  const now=Date.parse("2026-11-26T23:00:00Z"), zone="Asia/Shanghai";
-  const base={time:new Date(now).toISOString(),temp:18,wind:2,rain:0,sky:"cloudy"};
-  assert.deepEqual(todayAlerts([base,{...base,time:"2026-11-27T16:00:00Z",temp:38}],zone,now),[]);
-  for (const [change,kind] of [[{sky:"heavyrainandthunder"},"雷暴"],[{sky:"sleet"},"降雪或雨夹雪"],
-    [{rain:2.5},"明显降雨"],[{wind:10.8},"大风"],[{temp:35},"高温"],[{temp:-10},"严寒"]] as const) {
-    assert.ok(todayAlerts([{...base,...change}],zone,now).includes(kind));
-  }
-  assert.deepEqual(specialWeather(Array(5).fill({...base,rain:1})),["明显降雨"]);
-  assert.throws(()=>todayAlerts([],zone,now));
+test("7Timer civil uses Beijing midnight, preserves categories and rejects stale forecasts",async t=>{
+  const now=Date.parse("2026-11-27T14:20:00Z");
+  t.mock.method(Date,"now",()=>now);
+  const base={temp2m:16,wind10m:{speed:2},prec_type:"none",prec_amount:0,weather:"clearnight"};
+  const payload={product:"civil",init:"2026112700",dataseries:[
+    {...base,timepoint:12}, {...base,timepoint:15}, {...base,timepoint:18,weather:"tsrainnight",temp2m:36,wind10m:{speed:5},prec_type:"rain",prec_amount:4}
+  ]};
+  t.mock.method(globalThis,"fetch",async (url:string)=>{
+    const request=new URL(url);
+    assert.equal(request.hostname,"www.7timer.info");
+    assert.equal(request.searchParams.get("product"),"civil");
+    return Response.json(payload);
+  });
+  const result=await forecast({lat:30.3,lon:120.2});
+  assert.equal(result.periods[0].time,"2026-11-27T20:00:00+08:00");
+  assert.deepEqual(result.todayAlerts,[]);
+  assert.deepEqual(result.periods[2].alerts,["雷暴","明显降雨","大风","高温"]);
+  assert.equal(result.periods[2].wind,"6–7级");
+  const db=new DatabaseSync(":memory:");
+  const store=new WeatherLocations(db);
+  const city=await weatherTool(store,"unbound").execute("test",{cityCenter:{lat:30.3,lon:120.2}});
+  assert.match(city.content[0].text,/晴天钟/);
+  db.close();
+  payload.dataseries[1]={...base,timepoint:15,weather:"rainsnownight",prec_type:"frzr",temp2m:-11};
+  assert.deepEqual((await forecast({lat:40,lon:116})).todayAlerts,["冻雨","严寒"]);
+  payload.init="2026112200";
+  await assert.rejects(forecast({lat:32,lon:121}),/未更新/);
 });
