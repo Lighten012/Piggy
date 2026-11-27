@@ -44,6 +44,19 @@ test("authorized coarse location resolves to an area; stale and revoked fixes st
   assert.deepEqual(await read(),{available:false});
 });
 
+test("permission downgrade replaces a precise weather grid and rejects an older upload",t=>{
+  const db=new DatabaseSync(":memory:");t.after(()=>db.close());
+  const store=new WeatherLocations(db);
+  const fix={lat:30.26719,lon:120.15362,observed:now,precise:true};
+  store.sync("session",{revision:1,place:fix},now);
+  assert.equal(store.latest("session",now)?.lat,30.27);
+  assert.equal(store.latest("session",now)?.lon,120.15);
+  store.sync("session",{revision:2,place:{...fix,precise:false}},now);
+  store.sync("session",{revision:1,place:fix},now);
+  assert.equal(store.latest("session",now)?.lat,30.3);
+  assert.equal(store.latest("session",now)?.lon,120.2);
+});
+
 test("daily view uses provider min/max and Beijing date; city-only names are not doubled",async t=>{
   provider(t,url=>{
     if (url.pathname.startsWith("/geo/")) return {code:"200",location:[{...city,name:"杭州"}]};

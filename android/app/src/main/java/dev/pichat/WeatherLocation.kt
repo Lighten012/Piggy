@@ -38,8 +38,9 @@ internal class WeatherLocation(private val context: Context) : LocationListener 
         synchronized(Companion) {
             val p = prefs(context)
             if (observed <= p.getLong("observed", 0)) return
-            p.edit().putInt("lat", (location.latitude * 10).roundToInt())
-                .putInt("lon", (location.longitude * 10).roundToInt()).putLong("observed", observed)
+            val scale = if (precise(context)) 100 else 10
+            p.edit().putInt("scale", scale).putInt("lat", (location.latitude * scale).roundToInt())
+                .putInt("lon", (location.longitude * scale).roundToInt()).putLong("observed", observed)
                 .putLong("revision", nextRevision(context)).apply()
         }
     }
@@ -51,6 +52,9 @@ internal class WeatherLocation(private val context: Context) : LocationListener 
     companion object {
         private fun prefs(c: Context) = c.getSharedPreferences("local-weather", Context.MODE_PRIVATE)
         fun granted(c: Context) = c.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        fun precise(c: Context) = c.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        fun requestedPrecision(c: Context) = prefs(c).getBoolean("requestedPrecision", false)
+        fun markPrecisionRequest(c: Context) = prefs(c).edit().putBoolean("requestedPrecision", true).apply()
         // An explicit opt-out in build 57 can coexist with a system grant.
         fun legacyOff(c: Context) = !prefs(c).getBoolean("enabled", true)
         fun allowed(c: Context) = granted(c) && !legacyOff(c)
@@ -66,14 +70,21 @@ internal class WeatherLocation(private val context: Context) : LocationListener 
             if (!granted(c)) {
                 val edit = p.edit()
                 if (p.contains("enabled")) edit.remove("enabled")
-                if (p.contains("observed")) edit.remove("observed").remove("lat").remove("lon")
+                if (p.contains("observed")) edit.remove("observed").remove("lat").remove("lon").remove("scale")
                     .putLong("revision", nextRevision(c))
                 edit.apply()
+            } else if (!precise(c) && p.getInt("scale", 10) == 100) {
+                // Replace the last precise grid on the next sync, even before a new fix arrives.
+                p.edit().putInt("lat", (p.getInt("lat", 0) / 10.0).roundToInt())
+                    .putInt("lon", (p.getInt("lon", 0) / 10.0).roundToInt()).putInt("scale", 10)
+                    .putLong("revision", nextRevision(c)).apply()
             }
             if (!p.contains("revision")) return null
             val observed = p.getLong("observed", 0)
+            val scale = p.getInt("scale", 10)
             val place = if (allowed(c) && observed > System.currentTimeMillis() - 86_400_000)
-                JSONObject().put("lat", p.getInt("lat", 0) / 10.0).put("lon", p.getInt("lon", 0) / 10.0)
+                JSONObject().put("lat", p.getInt("lat", 0) / scale.toDouble()).put("lon", p.getInt("lon", 0) / scale.toDouble())
+                    .put("precise", scale == 100)
                     .put("observed", observed).put("zone", java.util.TimeZone.getDefault().id) else JSONObject.NULL
             return JSONObject().put("revision", p.getLong("revision", 0)).put("place", place)
         }

@@ -17,10 +17,11 @@ export class WeatherLocations {
     if (fix!==null && (!fix || !Number.isFinite(fix.lat) || Math.abs(fix.lat)>90 ||
       !Number.isFinite(fix.lon) || Math.abs(fix.lon)>180 || !Number.isSafeInteger(fix.observed) || fix.observed>now+300_000)) return;
     const usable=fix && fix.observed>now-day;
+    const scale=fix?.precise===true?100:10;
     const update=this.db.prepare(`INSERT INTO weather_location VALUES(?,?,?,?,?,?) ON CONFLICT(session) DO UPDATE SET
       revision=excluded.revision,lat=excluded.lat,lon=excluded.lon,observed=excluded.observed,zone=excluded.zone
       WHERE excluded.revision>weather_location.revision`).run(session,value.revision,
-        usable?Math.round(fix.lat*10)/10:null,usable?Math.round(fix.lon*10)/10:null,usable?fix.observed:null,usable?timezone:null);
+        usable?Math.round(fix.lat*scale)/scale:null,usable?Math.round(fix.lon*scale)/scale:null,usable?fix.observed:null,usable?timezone:null);
     if (update.changes && !usable) cache=undefined;
   }
   latest(session:string, now=Date.now()) {

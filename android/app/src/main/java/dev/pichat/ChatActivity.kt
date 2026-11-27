@@ -835,14 +835,15 @@ class ChatActivity : Activity() {
             locationChecked = true
             val granted = WeatherLocation.granted(this)
             if (!WeatherLocation.declined(this)) {
-                if (!granted) {
+                if (!granted || (!WeatherLocation.precise(this) && !WeatherLocation.legacyOff(this) && !WeatherLocation.requestedPrecision(this))) {
+                    WeatherLocation.markPrecisionRequest(this)
                     locationPromptOpen = true
-                    requestPermissions(arrayOf(android.Manifest.permission.ACCESS_COARSE_LOCATION), 72)
+                    requestPermissions(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION), 72)
                     return
                 }
                 if (WeatherLocation.legacyOff(this)) {
                     locationPromptOpen = true
-                    AlertDialog.Builder(this).setMessage("你之前关闭了当地天气。允许 Piggy 使用大致位置查询天气和发送早间提醒吗？")
+                    AlertDialog.Builder(this).setMessage("你之前关闭了当地天气。允许 Piggy 使用你授权的位置查询天气和发送早间提醒吗？")
                         .setPositiveButton("允许") { _, _ -> WeatherLocation.decision(this, true) }
                         .setNegativeButton("暂不使用") { _, _ -> WeatherLocation.decision(this, false) }
                         .setOnDismissListener { locationPromptOpen = false; startupPermissions() }.show()
