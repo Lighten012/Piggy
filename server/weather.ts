@@ -87,7 +87,7 @@ export const weatherDeclaration={name:"get_local_weather",description:"查询已
 export function weatherTool(store:WeatherLocations,session:string):AgentTool {
   return {...weatherDeclaration,label:"查询当地天气",async execute(){
     const place=store.latest(session);
-    const result=place?await forecast(place):{unavailable:"没有近期授权的位置，请询问城市，或提示可在侧边栏设置里开启当地天气。"};
+    const result=place?await forecast(place):{unavailable:"暂时没有近期位置。先用对话中已明确的地点，否则询问城市；如用户想启用定位，可以在手机系统的 Piggy 应用权限中允许使用期间访问大致位置。"};
     return {content:[{type:"text",text:JSON.stringify(result)}],details:{}};
   }};
 }

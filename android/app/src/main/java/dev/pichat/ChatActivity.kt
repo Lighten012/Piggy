@@ -31,6 +31,8 @@ import io.noties.markwon.ext.tables.TableRowSpan
 
 class ChatActivity : Activity() {
     private val weatherLocation by lazy { WeatherLocation(this) }
+    private var locationChecked = false
+    private var locationPromptOpen = false
     private val attachmentActions by lazy { AttachmentActions(this, client) }
     private val markdown by lazy { chatMarkdown(this) }
     private lateinit var menu: ImageButton
@@ -402,7 +404,11 @@ class ChatActivity : Activity() {
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
-        attachmentActions.onPermissionResult(request, results)
+        if (request == 72) {
+            locationPromptOpen = false
+            if (results.isNotEmpty()) WeatherLocation.decision(this, WeatherLocation.granted(this))
+            startupPermissions()
+        } else attachmentActions.onPermissionResult(request, results)
     }
 
     override fun onConfigurationChanged(config: android.content.res.Configuration) {
@@ -736,7 +742,6 @@ class ChatActivity : Activity() {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         if (!retry) input.setText("")
         watchSend()
-        if (generating) ReplyNotifications.askOnce(this)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -819,9 +824,40 @@ class ChatActivity : Activity() {
     }
     private val inboxRejected: () -> Unit = { updater.check() }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) startupPermissions()
+    }
+
+    private fun startupPermissions() {
+        if (!chatVisible || !hasWindowFocus() || locationPromptOpen) return
+        if (!locationChecked) {
+            locationChecked = true
+            val granted = WeatherLocation.granted(this)
+            if (!WeatherLocation.declined(this)) {
+                if (!granted) {
+                    locationPromptOpen = true
+                    requestPermissions(arrayOf(android.Manifest.permission.ACCESS_COARSE_LOCATION), 72)
+                    return
+                }
+                if (WeatherLocation.legacyOff(this)) {
+                    locationPromptOpen = true
+                    AlertDialog.Builder(this).setMessage("你之前关闭了当地天气。允许 Piggy 使用大致位置查询天气和发送早间提醒吗？")
+                        .setPositiveButton("允许") { _, _ -> WeatherLocation.decision(this, true) }
+                        .setNegativeButton("暂不使用") { _, _ -> WeatherLocation.decision(this, false) }
+                        .setOnDismissListener { locationPromptOpen = false; startupPermissions() }.show()
+                    return
+                }
+            }
+            if (granted && !WeatherLocation.legacyOff(this)) WeatherLocation.decision(this, true)
+        }
+        weatherLocation.start()
+        if (versionCurrent) ReplyNotifications.askOnce(this)
+    }
+
     private fun startInbox() {
         if (!versionCurrent || !chatVisible) return
-        ReplyNotifications.askOnce(this)
+        startupPermissions()
         ScheduledInbox.start(this, inboxUpdated, inboxRejected)
         inboxUpdated()
     }
@@ -851,7 +887,6 @@ class ChatActivity : Activity() {
             addAction(Intent.ACTION_TIMEZONE_CHANGED)
         })
         refreshClock()
-        weatherLocation.start()
         chatVisible = true
         ReplyNotifications.chatStarted(this)
         if (versionCurrent) refreshPhrases.run()

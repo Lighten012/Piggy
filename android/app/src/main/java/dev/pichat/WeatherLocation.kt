@@ -15,8 +15,10 @@ import kotlin.math.roundToInt
 /** Collect only while the chat is visible. Only rounded coordinates leave the phone. */
 internal class WeatherLocation(private val context: Context) : LocationListener {
     private val manager = context.getSystemService(LocationManager::class.java)
+    private var started = false
     fun start() {
-        if (!enabled(context) || !granted(context)) return
+        if (started || !allowed(context)) return
+        started = true
         val providers = manager.getProviders(true)
         for (provider in providers) {
             runCatching { manager.getLastKnownLocation(provider) }.getOrNull()?.let(::onLocationChanged)
@@ -25,10 +27,13 @@ internal class WeatherLocation(private val context: Context) : LocationListener 
             }
         }
     }
-    fun stop() { manager.removeUpdates(this) }
+    fun stop() {
+        if (started) manager.removeUpdates(this)
+        started = false
+    }
     override fun onLocationChanged(location: Location) {
         val age = ((SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000).coerceAtLeast(0)
-        if (!granted(context) || !enabled(context) || age >= 86_400_000) return
+        if (!allowed(context) || age >= 86_400_000) return
         val observed = System.currentTimeMillis() - age
         synchronized(Companion) {
             val p = prefs(context)
@@ -46,18 +51,28 @@ internal class WeatherLocation(private val context: Context) : LocationListener 
     companion object {
         private fun prefs(c: Context) = c.getSharedPreferences("local-weather", Context.MODE_PRIVATE)
         fun granted(c: Context) = c.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        fun enabled(c: Context) = prefs(c).getBoolean("enabled", false)
-        private fun nextRevision(c: Context) = maxOf(System.currentTimeMillis(), prefs(c).getLong("revision", 0) + 1)
-        @Synchronized fun enable(c: Context, value: Boolean) {
-            prefs(c).edit().putBoolean("enabled", value).remove("observed").remove("lat").remove("lon")
-                .putLong("revision", nextRevision(c)).apply()
+        // An explicit opt-out in build 57 can coexist with a system grant.
+        fun legacyOff(c: Context) = !prefs(c).getBoolean("enabled", true)
+        fun allowed(c: Context) = granted(c) && !legacyOff(c)
+        fun declined(c: Context) = prefs(c).getBoolean("declined", false)
+        fun decision(c: Context, allow: Boolean) {
+            val edit = prefs(c).edit().putBoolean("declined", !allow)
+            if (allow || !granted(c)) edit.remove("enabled")
+            edit.apply()
         }
+        private fun nextRevision(c: Context) = maxOf(System.currentTimeMillis(), prefs(c).getLong("revision", 0) + 1)
         @Synchronized fun snapshot(c: Context): JSONObject? {
-            if (enabled(c) && !granted(c)) enable(c, false)
             val p = prefs(c)
+            if (!granted(c)) {
+                val edit = p.edit()
+                if (p.contains("enabled")) edit.remove("enabled")
+                if (p.contains("observed")) edit.remove("observed").remove("lat").remove("lon")
+                    .putLong("revision", nextRevision(c))
+                edit.apply()
+            }
             if (!p.contains("revision")) return null
             val observed = p.getLong("observed", 0)
-            val place = if (enabled(c) && observed > System.currentTimeMillis() - 86_400_000)
+            val place = if (allowed(c) && observed > System.currentTimeMillis() - 86_400_000)
                 JSONObject().put("lat", p.getInt("lat", 0) / 10.0).put("lon", p.getInt("lon", 0) / 10.0)
                     .put("observed", observed).put("zone", java.util.TimeZone.getDefault().id) else JSONObject.NULL
             return JSONObject().put("revision", p.getLong("revision", 0)).put("place", place)
