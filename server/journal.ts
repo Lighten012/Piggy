@@ -74,6 +74,9 @@ export class Journal {
     if (!this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='attachment'").get()) {
       this.db.exec("ALTER TABLE turns ADD COLUMN attachment TEXT");
     }
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('turns') WHERE name='replied_at'").get()) {
+      this.db.exec("ALTER TABLE turns ADD COLUMN replied_at INTEGER");
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS turn_files (
         turn_id INTEGER NOT NULL, position INTEGER NOT NULL, attachment TEXT NOT NULL,
@@ -276,7 +279,7 @@ export class Journal {
     } catch(error) { this.db.exec("ROLLBACK"); throw error; }
   }
   lookup(conversation: string, request: string) {
-    return this.db.prepare("SELECT id,question,answer,status,attachment,sticker_id AS stickerId FROM turns WHERE conversation=? AND request=?").get(conversation,request);
+    return this.db.prepare("SELECT id,question,answer,status,attachment,sticker_id AS stickerId,replied_at AS repliedAt FROM turns WHERE conversation=? AND request=?").get(conversation,request);
   }
   begin(conversation: string, request: string, question: string, files: string[] = []) {
     this.db.exec("BEGIN");
@@ -295,8 +298,9 @@ export class Journal {
   complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = [], stickerId?:string) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const turn = this.db.prepare("UPDATE turns SET answer=?,sticker_id=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
-        .get(answer,stickerId??null,id);
+      const repliedAt = Date.now();
+      const turn = this.db.prepare("UPDATE turns SET answer=?,sticker_id=?,replied_at=?,status='complete' WHERE id=? AND status='pending' RETURNING conversation")
+        .get(answer,stickerId??null,repliedAt,id);
       if (!turn) throw new Error("Turn is no longer pending");
       this.db.prepare("DELETE FROM operation_receipts WHERE turn_id=?").run(id);
       const insert = this.db.prepare("INSERT INTO reply_files(key,turn_id,position,name,mime,size,until,remote,inline_at) VALUES(?,?,?,?,?,?,?,?,?)");
@@ -304,6 +308,7 @@ export class Journal {
       this.db.prepare("INSERT INTO active_context(conversation,messages,files,output_files) VALUES(?,?,?,?)")
         .run(turn.conversation,JSON.stringify(messages.map(({fileRefs, ...message}:ContextMessage) => message)),files.length ? JSON.stringify(files) : null,outputs.length ? JSON.stringify(outputs) : null);
       this.db.exec("COMMIT");
+      return repliedAt;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -358,8 +363,8 @@ export class Journal {
       {role:"assistant",content:[{type:"text",text:answer}],timestamp,api:"openai-responses",provider:"openai",model:"piggy-receipt",stopReason:"stop",
         usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}},
     ];
-    this.complete(id,answer,messages,this.turnFiles(id).map(f=>f.id));
-    return answer;
+    const repliedAt=this.complete(id,answer,messages,this.turnFiles(id).map(f=>f.id));
+    return {answer,repliedAt};
   }
   fail(id: number | bigint, partial: string) {
     this.db.prepare("UPDATE turns SET status='failed',answer=? WHERE id=? AND status='pending'").run(partial,id);

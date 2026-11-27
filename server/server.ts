@@ -219,7 +219,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     }
     if (existing.status === "failed") return reject(res,422,"上次生成中断，请重新发送");
     res.writeHead(200, {"Content-Type":"application/x-ndjson; charset=utf-8"});
-    res.end(JSON.stringify({delta:existing.answer}) + "\n" + JSON.stringify({done:true,session:conversation,answer:existing.answer,...(existing.stickerId?{stickerId:existing.stickerId}:{}),replyFiles:journal.replyFiles(Number(existing.id))}) + "\n");
+    res.end(JSON.stringify({delta:existing.answer}) + "\n" + JSON.stringify({done:true,session:conversation,repliedAt:existing.repliedAt,answer:existing.answer,...(existing.stickerId?{stickerId:existing.stickerId}:{}),replyFiles:journal.replyFiles(Number(existing.id))}) + "\n");
     return;
   }
   if (busy) return reject(res,409,"上一条消息仍在生成，请稍后重试");
@@ -326,12 +326,12 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
         text:answer+"\n回复附件："+outputs.files.map(f=>f.name).join("、")}];
     }
     Object.assign(last,{meterPrefix:prefix,meterFixed:fixed});
-    journal.complete(id, answer, proactive ? [last] : agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, stickerId);
+    const repliedAt=journal.complete(id, answer, proactive ? [last] : agent.state.messages.slice(initialMessageCount), ids as string[], outputs.files, stickerId);
     committed = true;
     const used=estimateContext([...history,...agent.state.messages.slice(initialMessageCount)] as Message[],model.id,prefix,fixed);
     emit({context:{used,limit:contextLimit}});
     if (used>threshold) backgroundCheck(conversation,model,fixed);
-    emit({ done:true, session:conversation, answer, ...(stickerId?{stickerId}:{}), replyFiles:journal.replyFiles(id) });
+    emit({ done:true, session:conversation, repliedAt, answer, ...(stickerId?{stickerId}:{}), replyFiles:journal.replyFiles(id) });
     console.info(JSON.stringify({event:"chat", mode, owner:proactive?"scheduler":"mobile", model:model.id, thinkingLevel:settings.effort, requestedTier:settings.tier, actualTier, status:"ok", webSearchUsed:search.used,
       durationMs:Date.now()-started, firstTextMs, inputTokens:last.usage.input, outputTokens:last.usage.output,
       cacheRead:last.usage.cacheRead, cacheWrite:last.usage.cacheWrite}));
@@ -340,7 +340,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, proactive=false) 
     await outputs.discard().catch(() => console.warn("Could not clean staged reply files"));
     const receipt=journal.finishInterrupted(id,partial);
     if(receipt) {
-      emit({done:true,session:conversation,answer:receipt,replyFiles:[]});
+      emit({done:true,session:conversation,...receipt,replyFiles:[]});
       return;
     }
     console.info(JSON.stringify({event:"chat", mode, owner:"mobile", status:"failed", durationMs:Date.now()-started}));

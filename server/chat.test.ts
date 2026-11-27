@@ -420,6 +420,7 @@ test("records accepted mobile turns and restores context after restart", async t
   for(const [mode,answer] of [["only",""],["together","OK"]]){
     const requestId=randomUUID(), phone=randomUUID(), question="sticker probe "+mode;
     const result=(await send(question,requestId,phone)).at(-1);
+    assert.ok(Number.isSafeInteger(result.repliedAt) && result.repliedAt > 0);
     assert.equal(result.done,true);assert.equal(result.answer,answer);assert.equal(result.stickerId,chosenSticker);
     const calls=histories.length;
     assert.deepEqual((await send(question,requestId,phone)).at(-1),result);

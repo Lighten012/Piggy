@@ -57,7 +57,7 @@ export class Schedules {
   }
   inbox(data:any) {
     if(typeof data?.session!=="string" || !uuid.test(data.session) || !Number.isSafeInteger(data.after) || data.after<0) throw new Error("设备参数无效");
-    return this.db.prepare(`SELECT t.id,t.answer,t.request,t.sticker_id AS stickerId FROM turns t JOIN scheduled_runs r ON t.request=r.request AND t.conversation=r.session
+    return this.db.prepare(`SELECT t.id,t.answer,t.request,t.replied_at AS repliedAt,t.sticker_id AS stickerId FROM turns t JOIN scheduled_runs r ON t.request=r.request AND t.conversation=r.session
        WHERE t.conversation=? AND t.status='complete' AND t.id>? ORDER BY t.id LIMIT 40`).all(data.session,data.after);
   }
 }

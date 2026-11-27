@@ -743,6 +743,20 @@ class ChatActivity : Activity() {
         if (intent.action == ReplyNotifications.OPEN_REPLY) toBottom()
     }
 
+    private var clock = ChatTime(System.currentTimeMillis())
+
+    private fun LinearLayout.timeLabel(previous: Long, current: Long, index: Int = childCount) {
+        val label = clock.label(previous, current) ?: return
+        val badge = text(label, 12f, muted).apply {
+            background = shape(0xe6faf9fc.toInt(), 16)
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+        }
+        addView(badge, index, LinearLayout.LayoutParams(wrap, wrap).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(12)
+        })
+    }
+
     private inner class HistoryAdapter : BaseAdapter() {
         private val pages = LruCache<Int,List<JSONObject>>(3)
         private var size = client.history.size()
@@ -761,14 +775,24 @@ class ChatActivity : Activity() {
             val rows = pages.get(page) ?: client.history.page(page * ChatHistory.PAGE_SIZE).also { pages.put(page,it) }
             return rows[position % ChatHistory.PAGE_SIZE]
         }
+        fun lastReplyBefore(position: Int): Long =
+            if (position == 0) 0L else getItem(position - 1).optLong("repliedAt")
+
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val group = convertView as? LinearLayout ?: column()
-            if (group.tag == position) return group
+            if (group.tag == (position to clock)) return group
             group.removeAllViews()
-            group.tag = position
+            group.tag = position to clock
             group.setPadding(0, if (position == 0) dp(14) else 0, 0, 0)
             val turn = getItem(position)
-            if (!turn.optBoolean("proactive")) group.bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
+            var previous = lastReplyBefore(position)
+            if (!turn.optBoolean("proactive")) {
+                val sent = turn.optLong("sentAt")
+                group.timeLabel(previous, sent)
+                group.bubble(turn.getString("text"), true, PiggyClient.turnFiles(turn), turn.optString("filename"))
+                previous = sent
+            }
+            group.timeLabel(previous, turn.optLong("repliedAt"))
             group.bubble(turn.getString("answer"), false, client.replyFiles(turn), stickerId=turn.optString("stickerId"))
             return group
         }
@@ -805,8 +829,27 @@ class ChatActivity : Activity() {
             if (chatVisible) chat.postDelayed(this, ReplyPhrases.refresh(this@ChatActivity))
         }
     }
+    private val timeChanged = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: Intent) = refreshClock()
+    }
+
+    private fun refreshClock() {
+        clock = ChatTime(System.currentTimeMillis())
+        historyAdapter.notifyDataSetChanged()
+        if (generating && pendingRows.childCount > 0) {
+            if (pendingRows.getChildAt(0) is TextView) pendingRows.removeViewAt(0)
+            pendingRows.timeLabel(historyAdapter.lastReplyBefore(historyAdapter.count), client.pendingSentAt, 0)
+        }
+    }
+
     override fun onStart() {
         super.onStart()
+        registerReceiver(timeChanged, android.content.IntentFilter().apply {
+            addAction(Intent.ACTION_DATE_CHANGED)
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+        })
+        refreshClock()
         chatVisible = true
         ReplyNotifications.chatStarted(this)
         if (versionCurrent) refreshPhrases.run()
@@ -814,6 +857,7 @@ class ChatActivity : Activity() {
         replyWait?.visible(true)
     }
     override fun onStop() {
+        unregisterReceiver(timeChanged)
         chatVisible = false
         ReplyNotifications.chatStopped()
         chat.removeCallbacks(refreshPhrases)
@@ -834,6 +878,7 @@ class ChatActivity : Activity() {
         showFile()
         val files = client.pendingAttachments
         empty.visibility = View.GONE
+        pendingRows.timeLabel(historyAdapter.lastReplyBefore(historyAdapter.count), client.pendingSentAt)
         pendingRows.bubble(client.pendingDraft, true, files)
         val reply = pendingRows.bubble("", false)
         val indicator = ReplyWait(reply)

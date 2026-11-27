@@ -53,6 +53,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
     }
 
     val pendingId: String? get() = prefs.getString("pendingId", null)
+    val pendingSentAt: Long get() = prefs.getLong("pendingSentAt", 0L)
     val inFlight: Boolean get() = prefs.getBoolean("sending", false)
     val pendingText: String get() = prefs.getString("pendingText", "").orEmpty()
     fun endFlight() { prefs.edit().remove("sending").commit() }
@@ -62,6 +63,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
             ?: UUID.randomUUID().toString()
         val edit = prefs.edit().putString("pendingText", text).putString("pendingDraft", draft)
             .putBoolean("sending", true).putString("pendingId", id).putBoolean("pendingSeparate", true)
+        if (id != pendingId) edit.putLong("pendingSentAt", System.currentTimeMillis())
         if (!retry) edit.putString("pendingMode", replyMode).putString("composer", "").putString("pendingFiles", JSONArray(attachments).toString())
             .remove("files").remove("file")
         return edit.commit()
@@ -338,6 +340,7 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                     http.setRequestProperty("Content-Type","application/json")
                     http.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
                 }) { http ->
+                    var repliedAt = 0L
                     var done = false
                     var replies: JSONArray? = null
                     var stickerId = ""
@@ -366,12 +369,14 @@ class PiggyClient(context: Context, private val outdated: () -> Unit) {
                                 }
                                 stickerId = event.optString("stickerId")
                                 replies = event.optJSONArray("replyFiles")
+                                repliedAt = event.optLong("repliedAt", 0L)
                                 done = true
                             }
                         }
                     }
                     if (!done) throw IOException("回复中断，请重试")
                     val turn = JSONObject().put("request", id).put("text", draftText).put("answer", answer.toString())
+                    turn.put("sentAt", pendingSentAt).put("repliedAt", repliedAt)
                     if (files.isNotEmpty()) {
                         files.forEach { ImagePreviews.save(context, it) }
                         turn.put("files", JSONArray(files))
