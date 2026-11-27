@@ -5,7 +5,9 @@ import type { DatabaseSync } from "node:sqlite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { uuid } from "./attachments.ts";
 
-import { WeatherLocations } from "./weather.ts";
+import type { WeatherLocations } from "./weather.ts";
+
+export const skipDeclaration={name:"skip_scheduled_message",description:"仅用于定时任务。发送条件未满足时静默结束，本次不向手机投递消息。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
 
 const zone = "Asia/Shanghai";
 export function nextOccurrence(expression:string, now:number) {
@@ -17,12 +19,10 @@ export function nextOccurrence(expression:string, now:number) {
 }
 
 export class Schedules {
-  readonly weather:WeatherLocations;
   readonly installation:Installation;
   readonly db:DatabaseSync;
   constructor(db:DatabaseSync,installation:Installation) {
     this.db=db;
-    this.weather=new WeatherLocations(db);
     this.installation=installation;
     db.exec(`
       CREATE TABLE IF NOT EXISTS schedules(id TEXT PRIMARY KEY,name TEXT NOT NULL,session TEXT NOT NULL,cron TEXT NOT NULL,prompt TEXT NOT NULL,enabled INTEGER NOT NULL,next INTEGER NOT NULL);
@@ -49,14 +49,6 @@ export class Schedules {
   enqueue(now:number) {
     const session=this.installation.session();
     if(!session)return;
-    const minute=Math.floor(now/60000);
-    // Beijing is UTC+8 throughout the year. Allow the same five-minute catch-up as other tasks.
-    const sinceSeven=(minute+480)%1440-420;
-    if (sinceSeven>=0 && sinceSeven<5 && this.weather.latest(session,now)) {
-      const due=(minute-sinceSeven)*60000;
-      this.db.prepare("INSERT OR IGNORE INTO scheduled_runs(request,task,name,session,prompt,due) VALUES(?,?,?,?,?,?)")
-        .run(randomUUID(),"local-weather","早间天气提醒",session,"",due);
-    }
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for(const t of this.db.prepare("SELECT * FROM schedules WHERE enabled=1 AND next<=? AND session IN (?,'')").all(now,session)) {
@@ -69,13 +61,12 @@ export class Schedules {
   }
   inbox(data:any) {
     if(typeof data?.session!=="string" || !uuid.test(data.session) || !Number.isSafeInteger(data.after) || data.after<0) throw new Error("设备参数无效");
-    this.weather.sync(data.session,data.weather);
     return this.db.prepare(`SELECT t.id,t.answer,t.request,t.replied_at AS repliedAt,t.sticker_id AS stickerId FROM turns t JOIN scheduled_runs r ON t.request=r.request AND t.conversation=r.session
        WHERE t.conversation=? AND t.status='complete' AND t.id>? ORDER BY t.id LIMIT 40`).all(data.session,data.after);
   }
 }
 
-export async function scheduleRoute(store:Schedules,req:IncomingMessage,res:ServerResponse,path:string,replyFiles:(id:number)=>unknown) {
+export async function scheduleRoute(store:Schedules,req:IncomingMessage,res:ServerResponse,path:string,replyFiles:(id:number)=>unknown,locations:WeatherLocations) {
   let status=200,result:unknown;
   try {
     const mobile=path==="/inbox" && req.headers["x-piggy-owner"]==="mobile" && req.method==="POST";
@@ -92,7 +83,10 @@ export async function scheduleRoute(store:Schedules,req:IncomingMessage,res:Serv
       for await(const chunk of req) {size+=chunk.length;if(size>8192) throw new Error("请求太大");chunks.push(chunk);}
       const data=JSON.parse(Buffer.concat(chunks).toString());
       if(mobile && data?.session!==req.headers["x-piggy-session"]) {status=403;throw new Error("对话编号与当前安装不符");}
-      if(mobile) result={messages:store.inbox(data).map(m=>({...m,replyFiles:replyFiles(Number(m.id))}))};
+      if(mobile) {
+        result={messages:store.inbox(data).map(m=>({...m,replyFiles:replyFiles(Number(m.id))}))};
+        locations.sync(data.session,data.weather);
+      }
       else {store.save(data,id);result={ok:true};}
     } else {status=405;throw new Error("不支持此操作");}
   } catch(error) { if(status===200) status=400;result={error:error instanceof Error && !('code' in error)?error.message:"请求无效"}; }

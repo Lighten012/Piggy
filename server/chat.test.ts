@@ -145,11 +145,14 @@ test("records accepted mobile turns and restores context after restart", async t
     if(users.at(-1)==="reopen archived file" && payload.input.at(-1).type==="function_call_output")
       recalledContainerIds=payload.tools.find(t=>t.type==="code_interpreter").container.file_ids ?? [];
     const sticker=users.at(-1)?.startsWith("sticker probe ");
-    if ((sticker || ["reopen archived file","请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1)))
+    const skip=users.at(-1)==="settings-probe conditional";
+    if(skip) for(const name of ["get_recent_location","get_local_weather","skip_scheduled_message"])
+      assert.ok(payload.tools.some(tool=>tool.name===name));
+    if ((skip || sticker || ["reopen archived file","请记住：只喝温水","不要记住：只喝温水","帮我记一下刚才那条"].includes(users.at(-1)))
         && payload.input.at(-1).type !== "function_call_output") {
       const recall=users.at(-1)==="reopen archived file";
-      const item = {type:"function_call",name:sticker ? "send_sticker" : recall ? "read_chat_context" : "save_memory",id:"fc_test"+histories.length,
-        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify(sticker ? {id:chosenSticker,only:users.at(-1).endsWith("only")} : recall ? {source:"turn",id:recallTurn,includeAttachments:true} : {text:"只喝温水"})};
+      const item = {type:"function_call",name:skip ? "skip_scheduled_message" : sticker ? "send_sticker" : recall ? "read_chat_context" : "save_memory",id:"fc_test"+histories.length,
+        call_id:"call_test"+histories.length,status:"completed",arguments:JSON.stringify(skip ? {} : sticker ? {id:chosenSticker,only:users.at(-1).endsWith("only")} : recall ? {source:"turn",id:recallTurn,includeAttachments:true} : {text:"只喝温水"})};
       for (const event of [
         {type:"response.output_item.added",output_index:0,item:{...item,arguments:""}},
         {type:"response.output_item.done",output_index:0,item},
@@ -500,6 +503,20 @@ test("records accepted mobile turns and restores context after restart", async t
     assert.equal(transcript?.status,"complete");
     assert.equal(schedulesDB.prepare("SELECT count(*) AS n FROM scheduled_runs").get()?.n,1);
     assert.deepEqual(JSON.parse(String(schedulesDB.prepare("SELECT messages FROM active_context WHERE conversation=?").get(phone)?.messages)).map(m=>m.role),["assistant"]);
+    const conditional={...task,name:"条件提醒",prompt:"settings-probe conditional",cron:"0 7 * * *"};
+    assert.equal((await fetch(worker.base+"/schedules",{method:"POST",headers:admin,body:JSON.stringify(conditional)})).status,200);
+    const listed=await (await fetch(worker.base+"/schedules",{headers:admin})).json();
+    assert.ok(listed.tasks.some(t=>t.name===conditional.name && t.cron===conditional.cron && t.enabled));
+    schedulesDB.prepare("UPDATE schedules SET next=? WHERE name=?").run(Date.now()-1,conditional.name);
+    let skipped=false;
+    for(let i=0;i<80 && !skipped;i++) {
+      await new Promise(r=>setTimeout(r,100));
+      skipped=!!schedulesDB.prepare("SELECT 1 FROM scheduled_runs WHERE name=? AND status='skipped'").get(conditional.name);
+    }
+    assert.ok(skipped,"conditional task was called and skipped");
+    assert.deepEqual(await inbox(phone,messages[0].id),[]);
+    assert.equal(schedulesDB.prepare("SELECT count(*) AS n FROM turns WHERE conversation=?").get(phone)?.n,1);
+    assert.equal(schedulesDB.prepare("SELECT count(*) AS n FROM active_context WHERE conversation=?").get(phone)?.n,1);
     schedulesDB.close();
   }
 

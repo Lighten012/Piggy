@@ -72,22 +72,30 @@ export function specialWeather(hours:Hour[]):string[] {
   if(hours.some(h=>h.temp<=-10)) alerts.push("严寒");
   return alerts;
 }
-export function weatherReminder(hours:Hour[], zone:string, now=Date.now()):string|null {
+export function todayAlerts(hours:Hour[], zone:string, now=Date.now()) {
   const day=new Intl.DateTimeFormat("sv-SE",{timeZone:zone});
   const today=day.format(now);
   const remaining=hours.filter(h=>day.format(Date.parse(h.time))===today);
-  const warnings=specialWeather(remaining);
-  if (!warnings.length) return null;
-  return "根据"+source+"当地 "+today+" 接下来几小时的预报，今天可能有"+warnings.join("、")+"。"+
-    "预报时段气温 "+Math.min(...remaining.map(h=>h.temp))+"～"+Math.max(...remaining.map(h=>h.temp))+"℃。"+
-    "给她一句简短实用的提醒，并注明来源 [MET Norway]("+credit+")。不要称作官方预警。";
+  return specialWeather(remaining);
+}
+
+export const locationDeclaration={name:"get_recent_location",description:"按需查询手机是否有 24 小时内的授权大致定位。返回可用状态、采集时间和时区；坐标仅由当地天气工具读取。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
+export function locationTool(store:WeatherLocations,session:string):AgentTool {
+  return {...locationDeclaration,label:"查询近期定位",async execute(){
+    const place=store.latest(session);
+    const result=place?{available:true,observedAt:new Date(place.observed).toISOString(),timezone:place.zone}:{available:false};
+    return {content:[{type:"text",text:JSON.stringify(result)}],details:{}};
+  }};
 }
 
 export const weatherDeclaration={name:"get_local_weather",description:"查询已授权的大致位置的当前及未来约两天的逐小时预报。用户明确指定其他城市时用网页搜索。",parameters:{type:"object",properties:{},additionalProperties:false}} as const;
 export function weatherTool(store:WeatherLocations,session:string):AgentTool {
   return {...weatherDeclaration,label:"查询当地天气",async execute(){
     const place=store.latest(session);
-    const result=place?await forecast(place):{unavailable:"暂时没有近期位置。先用对话中已明确的地点，否则询问城市；如用户想启用定位，可以在手机系统的 Piggy 应用权限中允许使用期间访问大致位置。"};
+    const weather=place?await forecast(place):null;
+    const latest=weather?store.latest(session):undefined;
+    const result=weather && latest && latest.lat===place?.lat && latest.lon===place.lon && latest.zone===place.zone
+      ? {...weather,todayAlerts:todayAlerts(weather.hours,latest.zone)} : {unavailable:"暂时没有近期位置。先用对话中已明确的地点，否则询问城市；如用户想启用定位，可以在手机系统的 Piggy 应用权限中允许使用期间访问大致位置。"};
     return {content:[{type:"text",text:JSON.stringify(result)}],details:{}};
   }};
 }

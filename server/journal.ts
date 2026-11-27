@@ -1,4 +1,5 @@
 import { Installation } from "./installation.ts";
+import { WeatherLocations } from "./weather.ts";
 import { Schedules } from "./schedules.ts";
 import { StickerLibrary } from "./stickers.ts";
 import { CycleStore } from "./cycle.ts";
@@ -33,6 +34,7 @@ function keywordExcerpt(text:string, terms:string[], size:number) {
 export class Journal {
   readonly installation:Installation;
   readonly schedules:Schedules;
+  readonly weather:WeatherLocations;
   private db: DatabaseSync;
   readonly stickers:StickerLibrary;
   readonly cycles:CycleStore;
@@ -40,6 +42,7 @@ export class Journal {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.installation = new Installation(this.db);
+    this.weather = new WeatherLocations(this.db);
     this.schedules = new Schedules(this.db,this.installation);
     this.db.exec(`
       PRAGMA journal_mode=WAL;
@@ -294,6 +297,15 @@ export class Journal {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  skipScheduled(id:number|bigint, session:string, request:string) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const run=this.db.prepare("UPDATE scheduled_runs SET status='skipped' WHERE session=? AND request=? AND status='queued'").run(session,request);
+      const turn=this.db.prepare("DELETE FROM turns WHERE id=? AND conversation=? AND request=? AND question='' AND status='pending'").run(id,session,request);
+      if (!run.changes || !turn.changes) throw new Error("Scheduled turn is no longer pending");
+      this.db.exec("COMMIT");
+    } catch(error) {this.db.exec("ROLLBACK");throw error;}
   }
   complete(id: number | bigint, answer: string, messages: AgentMessage[], files: string[] = [], outputs: ReplyFile[] = [], stickerId?:string) {
     this.db.exec("BEGIN IMMEDIATE");
